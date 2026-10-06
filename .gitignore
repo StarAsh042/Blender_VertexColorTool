@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 构建产物
+build/
+*.egg-info/
+
+# 注意: dist/ 刻意「不」忽略 —— 发行 zip 随版本一起提交，
+# 便于用户直接从仓库下载。重新打包请运行 scripts/build_zip.py
+
+# WorkBuddy 内部工作记录（不属于插件本体，本地保留）
+.workbuddy-ai/
+
+# 审计/交付报告（内部资料）
+deliverables/
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
