@@ -7,6 +7,45 @@ from .match_item import VertexColorMatchItem
 from ..utils.logging_utils import log_error
 
 
+def _on_match_result_selected(self, context):
+    """「匹配结果」列表选中行变化时，联动选中场景中对应的源/目标物体。
+
+    策略: 同时选中该条匹配的**源与目标**物体，并把**目标**设为活动物体
+    ——复制动作的受体通常是需要当场检查的一方。
+    防御（此回调由 UI 索引变化触发，任何异常都会打断交互）:
+      · 索引越界 / 列表为空 -> 不动当前选择；
+      · 物体已改名或删除（LIMITATIONS #22）-> 跳过该侧，另一侧照常选中；
+      · 非物体模式（编辑/雕刻等）-> 完全跳过，避免编辑中途切换活动物体；
+      · 整体兜底 try/except，联动失败不允许反过来打断 UI。
+    """
+    try:
+        index = self.match_results_index
+        if index < 0 or index >= len(self.match_results):
+            return
+        if context is None or context.view_layer is None:
+            return
+        if context.mode != 'OBJECT':
+            return
+
+        entry = self.match_results[index]
+        source = bpy.data.objects.get(entry.source_name)
+        target = bpy.data.objects.get(entry.target_name)
+        if source is None and target is None:
+            return  # 两侧都找不到（如被改名），保留用户当前的选择
+
+        for obj in context.view_layer.objects:
+            obj.select_set(False)
+        for obj in (source, target):
+            if obj is not None:
+                obj.select_set(True)
+        # 目标为主：活动物体设为复制受体；目标缺失时退化为源
+        active = target if target is not None else source
+        context.view_layer.objects.active = active
+    except Exception as exc:
+        # 联动是锦上添花的功能，绝不允许它把属性更新路径变成新的失败点
+        log_error(f"匹配结果联动选中场景物体失败: {exc}")
+
+
 # 匹配预设参数表（数据驱动，P2-14）。
 # 新增一套预设只需在此追加一项；新增一个参数也只需在各预设中补一个键，
 # 不再需要修改 on_preset_changed 的 if-elif 链。
@@ -447,7 +486,11 @@ class VertexColorToolSettings(bpy.types.PropertyGroup):
         name="选中匹配",
         default=0,
         min=0,
-        description="匹配结果列表中当前选中的条目索引"
+        description=(
+            "匹配结果列表中当前选中的条目索引；"
+            "选中变化时联动选中场景中的源/目标物体"
+        ),
+        update=_on_match_result_selected
     )
 
     last_operation: bpy.props.StringProperty(

@@ -405,6 +405,62 @@ def test_large_mesh_forces_kdtree():
           f"kd={'已构建' if (data and data.get('kd')) else 'None'}，顶点数={count}")
 
 
+def test_match_result_selection_sync():
+    """
+    结果联动（新功能）：选中「匹配结果」列表的一行时，场景同步选中
+    该条匹配的源/目标物体，且目标物体为活动物体。
+
+    防御路径同样覆盖：物体缺失（改名/删除）保留原选择；索引越界不崩溃。
+    注: RNA 的 update 只在值**变化**时触发，故先把索引拨到越界值再拨回，
+    保证必然触发两次回调。
+    """
+    clear_scene()
+    coll = bpy.data.collections.new("SyncTest")
+    bpy.context.scene.collection.children.link(coll)
+    src = make_mesh_object("sync_src", (0, 0, 0), (1.0, 0.0, 0.0, 1.0), coll)
+    tgt = make_mesh_object("sync_tgt", (2, 0, 0), (1.0, 1.0, 1.0, 1.0), coll)
+    other = make_mesh_object("sync_other", (4, 0, 0), (0.0, 0.0, 1.0, 1.0), coll)
+
+    vc_tool = bpy.context.scene.vertex_color_tool
+    vc_tool.match_results.clear()
+    entry = vc_tool.match_results.add()
+    entry.source_name = "sync_src"
+    entry.target_name = "sync_tgt"
+
+    # 前置：选择与活动物体都指向无关的第三方，联动后必须被替换
+    bpy.ops.object.select_all(action='DESELECT')
+    other.select_set(True)
+    bpy.context.view_layer.objects.active = other
+
+    # 触发联动（0 -> 1 越界 no-op，1 -> 0 必触发 update）
+    vc_tool.match_results_index = 1
+    vc_tool.match_results_index = 0
+
+    check("联动: 源物体被选中", src.select_get())
+    check("联动: 目标物体被选中", tgt.select_get())
+    check("联动: 目标物体为活动物体",
+          bpy.context.view_layer.objects.active is tgt,
+          f"active={getattr(bpy.context.view_layer.objects.active, 'name', None)}")
+    check("联动: 无关物体被取消选中", not other.select_get())
+
+    # 防御 1: 源/目标都被改名（物体缺失）-> 保留用户当前选择，不误清
+    ghost = vc_tool.match_results.add()
+    ghost.source_name = "sync_ghost"
+    ghost.target_name = "sync_ghost_too"
+    vc_tool.match_results_index = 0
+    vc_tool.match_results_index = 1   # 0 -> 1 必触发 update，命中缺失分支
+    check("防御: 源/目标缺失时保留当前选择",
+          src.select_get() and tgt.select_get()
+          and bpy.context.view_layer.objects.active is tgt)
+
+    # 防御 2: 索引越界 -> 不崩溃、不动选择
+    vc_tool.match_results_index = 99
+    check("防御: 索引越界不崩溃且保留原选择",
+          src.select_get() and tgt.select_get())
+
+    vc_tool.match_results.clear()
+
+
 def test_collection_recursion():
     """
     v1.1.0 行为变更：匹配 / 统计范围递归含所有层级子集合。
@@ -505,6 +561,7 @@ def main():
         run_case("P1-5 缓存隔离", test_cache_key_isolation)
         run_case("P1-8 大网格 KDTree 兜底", test_large_mesh_forces_kdtree)
         run_case("v1.1.0 集合递归与去重", test_collection_recursion)
+        run_case("结果联动选中场景物体", test_match_result_selection_sync)
 
     # 注销验证
     try:

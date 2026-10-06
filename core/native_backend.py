@@ -159,6 +159,43 @@ def is_available():
     return ensure_loaded()
 
 
+def unload():
+    """
+    卸载原生库并重置加载状态（插件注销时调用）。
+
+    为什么必须显式释放:
+        Windows 上被 ctypes 加载的 DLL 文件处于锁定状态；
+        不 FreeLibrary 的话，「卸载插件」删除安装目录时会因
+        「文件被占用」直接报错。Linux/macOS 允许删除已打开的库文件，
+        此调用同样安全（幂等；非 Windows 无需额外处理）。
+
+    调用时机: 必须在所有 NativeKDTree 句柄关闭**之后**
+    （close() 依赖模块级 _lib 调用 vct_kdtree_free）。
+    """
+    global _lib, _load_attempted, _load_error, _load_path
+    if _lib is None:
+        return
+    lib, _lib = _lib, None
+    # 重置为「未尝试」，保证同一会话内禁用 -> 重新启用后原生仍可再次加载
+    _load_attempted = False
+    _load_error = None
+    _load_path = None
+
+    handle = getattr(lib, "_handle", None)
+    if not handle:
+        return
+    try:
+        if sys.platform.startswith("win"):
+            if not ctypes.windll.kernel32.FreeLibrary(ctypes.c_void_p(handle)):
+                log_warning(
+                    "FreeLibrary 释放原生库失败（不影响卸载流程，"
+                    "重启 Blender 后可完全清理残留文件）"
+                )
+        # 非 Windows: 删除打开中的库文件本身合法，无需显式 dlclose
+    except Exception as exc:  # noqa: BLE001  释放失败绝不能打断卸载
+        log_warning(f"释放原生库时出错（不影响卸载，重启 Blender 后可完全清理）: {exc}")
+
+
 def status():
     """返回可读的状态描述，用于 UI 展示与诊断"""
     if is_available():

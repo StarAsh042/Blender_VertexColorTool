@@ -198,8 +198,9 @@ def unregister():
 
     注销流程:
         1. 移除缓存失效钩子
-        2. 删除 Scene 属性
-        3. 反向注销所有类
+        2. 清空缓存并释放原生库
+        3. 删除 Scene 属性
+        4. 反向注销所有类
     """
     # 移除钩子
     if _on_load_post in load_post:
@@ -207,6 +208,20 @@ def unregister():
             load_post.remove(_on_load_post)
         except Exception:
             pass
+
+    # 清空缓存（释放仍存活的原生 KDTree 句柄）并卸载原生库。
+    # 顺序不能反: NativeKDTree.close() 依赖模块级 _lib 仍在，先清缓存后 FreeLibrary。
+    # Windows 上 DLL 不显式释放会锁定文件，「卸载插件」删除安装目录时会报「文件被占用」。
+    try:
+        from .core.cache import VertexColorCache
+        VertexColorCache.clear_cache()
+    except Exception:
+        pass
+    try:
+        from .core import native_backend
+        native_backend.unload()
+    except Exception:
+        pass
 
     # 删除 Scene 属性
     if hasattr(bpy.types.Scene, 'vertex_color_tool'):
