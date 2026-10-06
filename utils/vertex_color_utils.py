@@ -10,11 +10,16 @@
       （get_active_vertex_color_layer / has_multiple_colors /
         save_color_attribute_data / restore_color_attribute_data）
     - P2-14: 新增 supports_color_attributes() 统一能力探测
-    - P0-3 : 新增通道预览备份层机制（backup_color_layer / restore_color_layer），
-      取代原先把原始色序列化为 JSON 字符串存进 Scene 属性的做法
+    - P0-2 : backup_color_layer 改用「名称锚定」而非绝对索引恢复激活层。
+      原实现用删除残留备份之前的 active_color_index 恢复，而删除层会让
+      后续层索引前移，导致激活层错位为备份层自身，进而在 RGBA 恢复时
+      把备份拷给自己再删除自己，原始色永久丢失。
+      restore_color_layer 同时增加护栏：拒绝以备份层为恢复目标。
 """
 
 import bmesh
+
+from .logging_utils import log_error
 
 
 # 通道预览备份层名称。
@@ -426,12 +431,80 @@ def get_vcol_layer(obj, name=None, create_if_missing=False):
 
 
 # =============================================================================
-# 通道预览备份层（P0-3 修复）
+# 通道预览备份层（P0-3 / P0-2 修复）
 # =============================================================================
 
 def has_preview_backup(mesh):
     """检查网格上是否存在通道预览的备份颜色层"""
     return supports_color_attributes(mesh) and PREVIEW_BACKUP_LAYER_NAME in mesh.color_attributes
+
+
+def _find_color_attribute_index(attributes, name):
+    """
+    在颜色属性集合中按名称查找索引，找不到返回 -1。
+
+    `bpy_prop_collection.find()` 在不同 Blender 版本上行为不一致
+    （部分版本对颜色属性集合不抛异常但恒返回 -1），
+    因此这里**以遍历为准**、find() 仅作为快速路径：
+    只有 find() 返回非负索引时才采信，否则一律回退到遍历，
+    确保两条路径都不会给出错误答案。
+
+    Args:
+        attributes: mesh.color_attributes
+        name: 颜色层名称
+
+    Returns:
+        int: 索引，未找到返回 -1
+    """
+    if not name:
+        return -1
+
+    # 快速路径：find() 可用且明确命中时直接采信
+    try:
+        index = attributes.find(name)
+        if index is not None and index >= 0:
+            return index
+    except Exception:
+        pass
+
+    # 权威路径：遍历（find() 不可用或恒返回 -1 时的兜底）
+    try:
+        for index, attribute in enumerate(attributes):
+            if attribute.name == name:
+                return index
+    except Exception:
+        pass
+
+    return -1
+
+
+def _activate_color_attribute_by_name(mesh, name):
+    """
+    按名称激活颜色层（而非按绝对索引）。
+
+    绝对索引在「删除层」后会错位——Blender 的color_attributes 删除元素时
+    后续元素索引前移。P0-2 的数据丢失根因正是用旧索引恢复激活层，
+    结果激活到了备份层自身。这里统一以名称为锚点，天然免疫索引漂移。
+
+    Args:
+        mesh: 网格数据
+        name: 要激活的颜色层名称
+
+    Returns:
+        bool: 是否成功激活
+    """
+    if not name:
+        return False
+
+    index = _find_color_attribute_index(mesh.color_attributes, name)
+    if index < 0:
+        return False
+
+    try:
+        mesh.color_attributes.active_color_index = index
+        return True
+    except Exception:
+        return False
 
 
 def backup_color_layer(mesh, layer):
@@ -444,8 +517,15 @@ def backup_color_layer(mesh, layer):
 
     注意:
         mesh.color_attributes.new() 会把新层设为激活层，
-        这里在创建后显式把激活层恢复为原来的 layer，
+        这里在创建后按「名称」把激活层恢复为原来的 layer，
         否则下一次 get_or_create_active_vcol_layer 会错误地返回备份层。
+
+    P0-2 安全修复:
+        原实现记录 `active_color_index` 绝对索引，在「先删除残留备份、
+        再新建备份」之后用该旧索引恢复，索引已因删除而前移，导致激活的
+        变成备份层自身。RGBA 恢复分支随后会把备份拷给自己再删除自己，
+        使真实颜色层只剩灰色且原始色随备份层一起被删除（不可逆）。
+        现改为记录并按**名称**恢复，免疫索引漂移。
 
     Args:
         mesh: 网格数据
@@ -457,11 +537,14 @@ def backup_color_layer(mesh, layer):
     if not supports_color_attributes(mesh):
         return None
 
-    # 记录原始激活层索引，创建备份后需要恢复
+    # 记录原始激活层的「名称」（P0-2：不用绝对索引，删除层会导致索引漂移）
+    original_name = None
     try:
-        original_active_index = mesh.color_attributes.active_color_index
+        active = mesh.color_attributes.active_color
+        if active is not None:
+            original_name = active.name
     except Exception:
-        original_active_index = -1
+        original_name = None
 
     try:
         # 先清理可能残留的旧备份（例如上次预览异常退出）
@@ -481,12 +564,14 @@ def backup_color_layer(mesh, layer):
     for i in range(count):
         backup.data[i].color = layer.data[i].color
 
-    # 恢复原本的激活层，避免备份层抢占激活状态
-    if original_active_index >= 0:
-        try:
-            mesh.color_attributes.active_color_index = original_active_index
-        except Exception:
-            pass
+    # 按名称恢复原本的激活层，避免备份层抢占激活状态
+    # 若原激活层名恰好是备份层（异常状态），则退而激活 layer 本身，
+    # 绝不能让备份层成为激活层。
+    restore_name = original_name
+    if not restore_name or restore_name == PREVIEW_BACKUP_LAYER_NAME:
+        restore_name = getattr(layer, 'name', None)
+    if restore_name and restore_name != PREVIEW_BACKUP_LAYER_NAME:
+        _activate_color_attribute_by_name(mesh, restore_name)
 
     return backup
 
@@ -495,10 +580,26 @@ def restore_color_layer(mesh, layer):
     """
     从备份层恢复颜色到 layer，并删除备份层。
 
+    P0-2 第二道防线:
+        若目标 layer 本身就是备份层，则本函数会把备份拷给自己再删除自己，
+        结果真实颜色层里只剩预览灰度、原始色随备份层一起消失（不可逆）。
+        因此这里直接拒绝该调用并返回 False。
+
     Returns:
         bool: 是否成功恢复
     """
     if not has_preview_backup(mesh):
+        return False
+
+    if layer is None:
+        return False
+
+    # P0-2 安全护栏：绝不把备份层当作恢复目标
+    if getattr(layer, 'name', None) == PREVIEW_BACKUP_LAYER_NAME:
+        log_error(
+            "拒绝从备份层恢复到备份层（会删除原始色）。"
+            "请点「RGBA」恢复，或检查该物体的激活颜色层是否被手动改动。"
+        )
         return False
 
     backup = mesh.color_attributes[PREVIEW_BACKUP_LAYER_NAME]
@@ -509,11 +610,6 @@ def restore_color_layer(mesh, layer):
     mesh.color_attributes.remove(backup)
 
     # 删除备份层后重新激活被恢复的层，保持工具行为可预期
-    try:
-        index = mesh.color_attributes.find(layer.name)
-        if index >= 0:
-            mesh.color_attributes.active_color_index = index
-    except Exception:
-        pass
+    _activate_color_attribute_by_name(mesh, getattr(layer, 'name', None))
 
     return True

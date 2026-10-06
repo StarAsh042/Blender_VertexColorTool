@@ -13,8 +13,18 @@ env/
 build/
 *.egg-info/
 
-# 注意: dist/ 刻意「不」忽略 —— 发行 zip 随版本一起提交，
-# 便于用户直接从仓库下载。重新打包请运行 scripts/build_zip.py
+# 发行 zip 不入库：dist/ 只用于 GitHub Releases 发包，
+# 重新打包请运行 scripts/build_zip.py
+dist/
+
+# 原生库的链接器/调试产物（运行时只需要 .dll / .so / .dylib）
+native/bin/*.lib
+native/bin/*.pdb
+native/bin/*.exp
+native/bin/*.ilk
+native/obj/
+native/zig-cache/
+.zig-cache/
 
 # WorkBuddy 内部工作记录（不属于插件本体，本地保留）
 .workbuddy-ai/
@@ -32,3 +42,9 @@ deliverables/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# AI 助手的本地工作目录（非项目文件，不应进版本库）
+.workbuddy/
+
+# ZCode 会话本地工作目录（计划/任务记录，非项目文件）
+.zcode/

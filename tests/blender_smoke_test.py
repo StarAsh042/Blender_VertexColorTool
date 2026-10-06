@@ -405,6 +405,73 @@ def test_large_mesh_forces_kdtree():
           f"kd={'已构建' if (data and data.get('kd')) else 'None'}，顶点数={count}")
 
 
+def test_collection_recursion():
+    """
+    v1.1.0 行为变更：匹配 / 统计范围递归含所有层级子集合。
+
+    直接验证 utils/collection_utils.get_collection_objects 的三条语义：
+      1. 递归：嵌套子集合里的物体必须被纳入（旧行为会漏掉）；
+      2. 去重：同一物体链接进多个集合时只出现一次；
+      3. 文案：统计字符串必须标明「含子集合」，否则用户会以为算错。
+    """
+    from Blender_VertexColorTool.utils.collection_utils import (
+        get_collection_objects, format_collection_stats,
+    )
+
+    # 清理可能的同名残留（重跑场景）
+    for name in ("RecursionRoot", "RecursionChild", "RecursionGrandchild"):
+        coll = bpy.data.collections.get(name)
+        if coll:
+            bpy.data.collections.remove(coll)
+
+    root = bpy.data.collections.new("RecursionRoot")
+    bpy.context.scene.collection.children.link(root)
+    child = bpy.data.collections.new("RecursionChild")
+    root.children.link(child)
+    grandchild = bpy.data.collections.new("RecursionGrandchild")
+    child.children.link(grandchild)
+
+    def _cube(name):
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        obj = bpy.context.active_object
+        obj.name = name
+        return obj
+
+    in_root = _cube("RecursionInRoot")
+    in_grandchild = _cube("RecursionInGrandchild")
+    in_both = _cube("RecursionInBoth")   # 同时链接进 root 与 grandchild
+
+    # 清掉 primitive 自动链接进 scene collection 的关系，按测试意图重新链接
+    for obj in (in_root, in_grandchild, in_both):
+        for coll in list(obj.users_collection):
+            coll.objects.unlink(obj)
+    root.objects.link(in_root)
+    grandchild.objects.link(in_grandchild)
+    root.objects.link(in_both)
+    grandchild.objects.link(in_both)
+
+    names = [o.name for o in get_collection_objects(root)]
+    check("递归: 孙集合中的物体被纳入（旧行为会漏掉）",
+          "RecursionInGrandchild" in names, f"names={names}")
+    check("递归: 根集合直属物体被纳入",
+          "RecursionInRoot" in names, f"names={names}")
+    check("去重: 同时链接进两个集合的物体只出现一次",
+          names.count("RecursionInBoth") == 1, f"names={names}")
+    check("总数: 恰为 3 个去重后的物体",
+          len(names) == 3, f"names={names}")
+
+    text = format_collection_stats("参考组", 3, 3, 0)
+    check("统计文案标明「含子集合」", "含子集合" in text, f"text={text!r}")
+
+    # 清理
+    for name in ("RecursionRoot", "RecursionChild", "RecursionGrandchild"):
+        coll = bpy.data.collections.get(name)
+        if coll:
+            bpy.data.collections.remove(coll)
+    for obj in (in_root, in_grandchild, in_both):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -437,6 +504,7 @@ def main():
         run_case("P0-3 通道预览备份恢复", test_preview_channel_backup_restore)
         run_case("P1-5 缓存隔离", test_cache_key_isolation)
         run_case("P1-8 大网格 KDTree 兜底", test_large_mesh_forces_kdtree)
+        run_case("v1.1.0 集合递归与去重", test_collection_recursion)
 
     # 注销验证
     try:

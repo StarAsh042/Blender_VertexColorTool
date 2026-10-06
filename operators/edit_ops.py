@@ -302,20 +302,34 @@ class VERTEXCOLOR_OT_ModifyVertexColor(bpy.types.Operator):
         """
         调用操作符时自动获取选中顶点的颜色
 
+        取不到颜色时**取消并报错**，不打开对话框:
+            取色失败意味着「没有可读的颜色」，此时若照常打开对话框，
+            用户看到的是算子属性的默认值——白色 swatch。
+            白色会被误读成「读出来就是白色」，确认后就把白色刷满模型。
+            错误信息导致的错误操作比直接报错更糟，因此这里必须拒绝。
+
+        与同模块 clear_vertex_colors.invoke() 保持同一套标准:
+            两者都是「先读取、再弹窗」型算子，前置条件不满足时都应拒绝。
+
         Returns:
             set: Blender操作结果
         """
-        # 尝试从选中物体或顶点获取颜色
+        # 尝试从选中物体或顶点获取颜色。
+        # 注意用 `is None` 而非真值判断: 读到的颜色可能是全 0 的
+        # (0,0,0,0)，它是合法颜色而非「没读到」。
         picked_color = self.get_vertex_color_from_selection(context)
 
-        if picked_color:
-            self.picked_color = picked_color
-            vc_tool = context.scene.vertex_color_tool
-            vc_tool.picked_color = picked_color
+        if picked_color is None:
+            self.report({'ERROR'}, "请先选择要读取颜色的顶点或物体")
+            return {'CANCELLED'}
 
-            color_desc = f"R={picked_color[0]:.2f}, G={picked_color[1]:.2f}, B={picked_color[2]:.2f}, A={picked_color[3]:.2f}"
-            vc_tool.last_operation = f"已获取选中颜色 ({color_desc})"
-            self.report({'INFO'}, f"已获取选中颜色: {color_desc}")
+        self.picked_color = picked_color
+        vc_tool = context.scene.vertex_color_tool
+        vc_tool.picked_color = picked_color
+
+        color_desc = f"R={picked_color[0]:.2f}, G={picked_color[1]:.2f}, B={picked_color[2]:.2f}, A={picked_color[3]:.2f}"
+        vc_tool.last_operation = f"已获取选中颜色 ({color_desc})"
+        self.report({'INFO'}, f"已获取选中颜色: {color_desc}")
 
         return context.window_manager.invoke_props_dialog(self)
 

@@ -35,10 +35,17 @@ class VERTEXCOLOR_PT_ManualToolsPanel(bpy.types.Panel):
         # 常驻颜色选择器
         col.label(text="选择颜色:", icon='EYEDROPPER')
         col.prop(vc_tool, "picked_color", text="")
-        
+
         row = col.row(align=True)
         row.operator("vertexcolor.apply_selected_color", text="应用颜色", icon='BRUSHES_ALL')
         row.operator("vertexcolor.clear_vertex_colors", text="清除颜色", icon='X')
+
+        # 「从选中顶点取色」：打开对话框前先把当前选区的平均颜色读进拾取器，
+        # 避免「想调成某个已存在的颜色」时只能靠肉眼近似输入。
+        # 无选中顶点/物体时取色返回None（不报错），对话框照常以默认白色打开。
+        row = col.row(align=True)
+        row.operator("vertexcolor.modify_vertex_color",
+                     text="▸ 从选中顶点取色", icon='EYEDROPPER')
 
         layout.separator(factor=0.5)
 

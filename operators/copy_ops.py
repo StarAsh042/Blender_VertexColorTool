@@ -9,6 +9,10 @@
       同时把 cancelled 标志改为在 execute 开始时重置，
       避免类属性在多实例/重入场景下状态不隔离。
     - P2-18: 统一错误上报。
+    - P0-5 : 批量复制的失败原因聚合。
+      原实现只统计「成功 N, 失败 M」，用户无法得知那M 个为何失败
+      （原因仅在 Blender 控制台）。现收集失败明细并在结束时
+      通过 self.report + 面板状态栏展示前 3 条。
 """
 
 import bpy
@@ -19,6 +23,95 @@ from ..utils.vertex_color_utils import has_vertex_colors, get_vertex_color_info
 from ..utils.logging_utils import log_error, report_error
 from ..core.vertex_color_ops import copy_vertex_colors_between_objects
 from ..core.cache import VertexColorCache
+
+
+# 失败明细最多展示的条数（P0-5）。
+# 超过 3 条时再给出总数，避免 self.report 弹出超长文本刷屏。
+_FAILURE_DETAIL_LIMIT = 3
+
+# 失败明细最多**收集**的条数（P0-5）。
+# 批量复制可能有上千个目标，全量收集明细本身会占用内存；
+# 超出后只保留计数，不再追加文本（展示时统一用失败总数补足）。
+_FAILURE_COLLECT_LIMIT = 50
+
+# 取色路径标识 -> 性能报告里的中文标签（阶段 B / 阶段 C）。
+# 两条约束启用时都会绕过原生内核（原生暂未实现这两个约束），
+# 报告里如实显示当前路径，避免「显示与实际不符」。
+_COLOR_PATH_LABELS = {
+    'native': '原生内核（C++）',
+    'python': 'Python',
+    'python-normal': 'Python（法线约束已启用）',
+    'python-distance': 'Python（取色距离上限已启用）',
+    'python-constraints': 'Python（法线约束、取色距离上限已启用）',
+}
+
+
+class _BoundedFailureList(list):
+    """
+    带长度上限 + 相同原因合并的失败原因列表（P0-5 / QA 复核项 C、D）。
+
+    直接传给 copy_vertex_colors_between_objects 的 failure_reasons 参数，
+    使核心层的每一处失败追加都自动受 _FAILURE_COLLECT_LIMIT 约束，
+    无需在核心层为「是否有上限」写任何分支。
+
+    两种压缩手段：
+        1) 去重合并：P0-1 触发时整批目标都会失败，且原因字符串**完全相同**
+           （都指向同一个源物体）。若不去重，用户会看到 3 条一模一样的文字。
+           这里把相同原因折叠为 1 条并记录重复次数。
+        2) 长度上限：超出 _FAILURE_COLLECT_LIMIT 后只计数，不再追加文本。
+
+    合并与丢弃的条数分别记录在 merged / dropped 中，
+    展示时用「另有 N 项失败」统一补全总数。
+    """
+
+    def __init__(self, limit=_FAILURE_COLLECT_LIMIT):
+        super().__init__()
+        self.limit = limit
+        self.merged = 0    # 因原因重复而被合并的条数
+        self.dropped = 0   # 因超出长度上限而被丢弃的条数
+
+    @property
+    def total(self):
+        """本列表代表的失败总条数（含合并与丢弃的）"""
+        return len(self) + self.merged + self.dropped
+
+    def append(self, reason):
+        # 去重合并：相同原因只保留一条，重复次数累加到 merged
+        if reason in self:
+            self.merged += 1
+            return
+        if len(self) < self.limit:
+            super().append(reason)
+        else:
+            self.dropped += 1
+
+
+def _format_failure_details(failures, total_failures=None):
+    """
+    把失败明细列表格式化为一行可读文本（P0-5）。
+
+    Args:
+        failures: 失败原因列表（_BoundedFailureList 或普通 list）
+        total_failures: 实际失败总数。为 None 时取 len(failures)。
+            与 len(failures) 不一致时（因收集上限被丢弃），
+            补充说明还有多少项失败未展开。
+
+    Returns:
+        str: 形如 "A: 原因1； B: 原因2； C: 原因3（另有 57 项失败）" 的文本，
+             无失败时返回空字符串
+    """
+    if not failures:
+        return ""
+
+    shown = list(failures)[:_FAILURE_DETAIL_LIMIT]
+    detail = "； ".join(shown)
+
+    if total_failures is None:
+        total_failures = len(failures)
+    remaining = int(total_failures) - len(shown)
+    if remaining > 0:
+        detail += f"（另有 {remaining} 项失败）"
+    return detail
 
 
 class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
@@ -104,12 +197,15 @@ class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
             # 复制顶点色到每个目标物体
             success_count = 0
             fail_count = 0
+            # P0-5: 收集失败原因，结束时聚合展示
+            failures = _BoundedFailureList()
 
             for i, target_obj in enumerate(valid_targets):
                 try:
                     # 复制顶点色
                     success = copy_vertex_colors_between_objects(
-                        source_obj, target_obj, vc_tool=vc_tool
+                        source_obj, target_obj, vc_tool=vc_tool,
+                        failure_reasons=failures,
                     )
 
                     if success:
@@ -123,11 +219,22 @@ class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
 
                 except Exception as e:
                     log_error(f"复制顶点色到 {target_obj.name} 时出错", exc=e)
+                    failures.append(f"{target_obj.name}: {e}")
                     fail_count += 1
                     continue
 
-            vc_tool.last_operation = f"手动复制: 成功 {success_count}, 失败 {fail_count}"
-            self.report({'INFO'}, f"成功从 {source_obj.name} 复制顶点色到 {success_count} 个物体 ({fail_count} 个失败)")
+            # P0-5: 把失败明细展示给用户（面板状态栏 + 状态栏报告）
+            failure_detail = _format_failure_details(failures, total_failures=fail_count)
+            summary = f"手动复制: 成功 {success_count}, 失败 {fail_count}"
+            if failure_detail:
+                summary += f" | 失败原因: {failure_detail}"
+            vc_tool.last_operation = summary
+            self.report(
+                {'INFO'},
+                f"成功从 {source_obj.name} 复制顶点色到 {success_count} 个物体 ({fail_count} 个失败)"
+            )
+            if failure_detail:
+                self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
             return {'FINISHED'}
 
         except Exception as e:
@@ -153,6 +260,24 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
     bl_idname = "vertexcolor.copy_colors"
     bl_label = "复制顶点色"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        """
+        仅在已有匹配结果时可用（否则按钮变灰）。
+
+        为什么需要: 复制完全依赖上一步「2. 查找匹配」写入的match_results，
+        没有结果时点按钮只会得到「请先查找匹配」的报错 toast。
+        变灰能让用户立刻看出是前置步骤缺失，而不是自己点错了。
+
+        注意: poll 由 Blender 每帧调用。match_results 是 CollectionProperty，
+        取 len() 为 O(1)，不遍历元素，也不做任何异常抛出。
+        """
+        scene = getattr(context, "scene", None)
+        vc_tool = getattr(scene, "vertex_color_tool", None)
+        if vc_tool is None:
+            return False
+        return len(vc_tool.match_results) > 0
 
     cancelled = False
 
@@ -194,6 +319,8 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
 
             success_count = 0
             fail_count = 0
+            # P0-5: 收集失败原因，结束时聚合展示
+            failures = _BoundedFailureList()
 
             # 说明（P1-4）: 此处不再无条件调用 VertexColorCache.clear_cache()。
             # 缓存失效由对象指针缓存键 + load_post 钩子保证，
@@ -225,11 +352,17 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
 
                             if not source_obj or not target_obj:
                                 fail_count += 1
+                                missing = []
+                                if not source_obj:
+                                    missing.append(f"源物体 '{match.source_name}' 不存在")
+                                if not target_obj:
+                                    missing.append(f"目标物体 '{match.target_name}' 不存在")
+                                failures.append("; ".join(missing))
                                 continue
-
                             # 使用共用的复制函数
                             if copy_vertex_colors_between_objects(
-                                source_obj, target_obj, vc_tool=vc_tool
+                                source_obj, target_obj, vc_tool=vc_tool,
+                                failure_reasons=failures,
                             ):
                                 success_count += 1
                             else:
@@ -244,6 +377,9 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
                             log_error(
                                 f"复制顶点色时出错 (源: {match.source_name}, 目标: {match.target_name})",
                                 exc=e,
+                            )
+                            failures.append(
+                                f"{match.source_name} -> {match.target_name}: {e}"
                             )
                             fail_count += 1
                             if profiling_enabled:
@@ -305,7 +441,7 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
                     avg_batch_time = 0
 
                 # 缓存统计
-                cache_stats = VertexColorCache.get_cache_stats()
+                cache_stats = VertexColorCache.get_cache_stats(vc_tool)
 
                 # 生成统计报告
                 stats_report = f"""
@@ -315,21 +451,37 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
 平均批处理: {avg_batch_time:.3f}s
 平均单对处理: {avg_match_time:.4f}s (max: {max_match_time:.4f}s, min: {min_match_time:.4f}s)
 缓存命中率: {cache_stats['hit_rate']:.1f}% ({cache_stats['hits']} 命中, {cache_stats['misses']} 未命中)
+缓存内存: {cache_stats['cached_mb']:.1f}MB / {cache_stats['max_cache_mb']:.0f}MB ({cache_stats['cache_size']} 条)
+取色路径: {_COLOR_PATH_LABELS.get(cache_stats.get('color_path'), 'Python')}
                 """.strip()
 
                 print(stats_report)
                 vc_tool.profiling_stats = stats_report
 
             elapsed_time = time.time() - start_time
+
+            # P0-5: 把失败明细展示给用户（面板状态栏 + 状态栏报告）
+            failure_detail = _format_failure_details(failures, total_failures=fail_count)
+
             if self.cancelled:
-                vc_tool.last_operation = (
+                summary = (
                     f"复制已取消: 成功 {success_count}, 失败 {fail_count} ({elapsed_time:.2f}s)"
                 )
+                if failure_detail:
+                    summary += f" | 失败原因: {failure_detail}"
+                vc_tool.last_operation = summary
                 self.report({'WARNING'}, f"复制被取消: 已成功 {success_count}, 失败 {fail_count}")
+                if failure_detail:
+                    self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
                 return {'CANCELLED'}
 
-            vc_tool.last_operation = f"复制完成: 成功 {success_count}, 失败 {fail_count} ({elapsed_time:.2f}s)"
+            summary = f"复制完成: 成功 {success_count}, 失败 {fail_count} ({elapsed_time:.2f}s)"
+            if failure_detail:
+                summary += f" | 失败原因: {failure_detail}"
+            vc_tool.last_operation = summary
             self.report({'INFO'}, f"顶点色复制完成: 成功 {success_count}, 失败 {fail_count} (耗时: {elapsed_time:.2f}秒)")
+            if failure_detail:
+                self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
             return {'FINISHED'}
 
         except Exception as e:
@@ -344,3 +496,56 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
     def cancel(self, context):
         """取消操作（进度条显示时按 ESC 触发）"""
         self.cancelled = True
+
+
+class VERTEXCOLOR_OT_ClearCache(bpy.types.Operator):
+    """
+    清空顶点色缓存
+
+    存在的理由:
+        缓存键是「对象地址 + 层名 + 顶点数」，**不包含颜色值**，
+        因此改完源物体的顶点色后再复制会直接命中旧缓存，
+        拿到修改前的颜色，且没有任何提示（见 docs/LIMITATIONS.md 限制第 12 条）。
+        此前唯一的绕过办法是重开 .blend 文件。
+
+    注意:
+        - 不声明 UNDO：清缓存不可撤销（也不需要撤销，缓存本就是可重建的派生数据）。
+        - 同时重置命中率统计（clear_cache 内部会归零 hits/misses）。
+    """
+    bl_idname = "vertexcolor.clear_cache"
+    bl_label = "清空缓存"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        """
+        清空顶点色缓存并反馈清理结果
+
+        Returns:
+            set: Blender操作结果
+        """
+        try:
+            vc_tool = context.scene.vertex_color_tool
+
+            # 先取清理前的快照用于反馈。必须传 vc_tool：
+            # 不传时 get_cache_stats 读的是类默认预算，而非用户实际设置的上限。
+            before = VertexColorCache.get_cache_stats(vc_tool)
+            cleared_count = before.get('cache_size', 0)
+            freed_mb = before.get('cached_mb', 0.0)
+
+            VertexColorCache.clear_cache()
+
+            if cleared_count > 0:
+                message = (
+                    f"已清空缓存：{cleared_count} 条条目，"
+                    f"释放约 {freed_mb:.1f}MB；命中率统计已重置"
+                )
+            else:
+                message = "缓存已是空的，无需清理（命中率统计已重置）"
+
+            vc_tool.last_operation = message
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+
+        except Exception as e:
+            report_error(self, context, f"清空缓存时出错: {str(e)}", exc=e)
+            return {'CANCELLED'}

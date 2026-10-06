@@ -1,0 +1,158 @@
+# ============================================================================
+#  Blender 顶点色工具 —— 自动化测试
+#
+#  设计原则（本项目最核心的一条教训，必须贯穿整个 CI）:
+#
+#    **CI 绿，必须意味着「用户实际会走的代码路径被验证过」。**
+#
+#    上一轮出现过「CI 5/5 全绿，但插件在默认设置下 100% 不可用」。
+#    根因不是测试不够多，而是**信号不诚实**：
+#      · 测试替身比真实环境更宽容，把唯一会崩的组合消掉了；
+#      · Blender 测试只打印汇总、**不用退出码表态**，失败也返回 0。
+#    所以本workflow 刻意做了三件事：
+#      1. Job 1 **必须装 numpy** —— 否则数值路径（Blender 里是主路径）
+#         在 CI 上根本没被执行过；
+#      2. Job 1 真实调用 `--real-numpy`，并在无 numpy 时**判为失败**
+#         而非静默放过；
+#      3. Job 2 用 scripts/run_blender_tests.py 包一层，
+#         由它解析汇总行反推成败（原生测试文件自身不给退出码）。
+#
+#  Job 划分依据:
+#    Job 1（fast，无需 Blender，约 40 秒）
+#      · 纯 stdlib 逻辑 + 替身，秒级完成，给快速反馈；
+#      · 含真 numpy 通道，故需要 `pip install numpy`；
+#      · 失败即代表源码逻辑有问题，不需要等Blender。
+#    Job 2（需 Blender）
+#      · 覆盖 bpy 交互路径（注册、颜色层、预览备份、网格读写），
+#        这些**无法用替身替代**——本项目吃过替身太宽松的亏；
+#      · 依赖 GUI 型 API，只能在真 Blender 里跑。
+# ============================================================================
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新提交会取消仍在跑的旧 CI，避免结果互相覆盖。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================================================
+  # Job 1: 快速检查（无需 Blender）
+  # ==========================================================================
+  quick:
+    name: 快速检查（无需 Blender）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.x（pin SHA 防供应链漂移）
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.x（pin SHA）
+        with:
+          python-version: "3.11"
+
+      # ★ 关键：必须装 numpy。
+      #   插件的坐标/法线批处理在 Blender 里走的就是 numpy 向量化路径；
+      #   不装 numpy 的话，CI 跑的是「list[Vector] 回退」，
+      #   真实环境的主路径一行都不会被执行 —— 正是上一轮假绿的成因。
+      - name: 安装 numpy（覆盖数值路径）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -c "import numpy; print('numpy', numpy.__version__)"
+
+      - name: 运行 CI 快速检查
+        # 不加 --allow-skip: 本机已装 numpy，若真 numpy 通道仍跳过，
+        # 说明接线坏了，必须红。宁可误报也不放过。
+        run: python scripts/run_ci_checks.py
+
+  # ==========================================================================
+  # Job 2: Blender 无头测试
+  # ==========================================================================
+  blender:
+    name: Blender 无头测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.x（pin SHA 防供应链漂移）
+
+      - name: 安装 Blender（官方 CDN 直下载）
+        run: |
+          set -euo pipefail
+          # 3.6 LTS：插件面向 Blender 3.x / 4.x，这里固定一个稳定基线。
+          # 换 4.x 只需改这一行（版本号与 URL 目录）。
+          # 直下载官方 CDN 而不用第三方 Action：
+          #   1. 此前引用的 blender-actions/download-blender 实际并不存在
+          #      （Job 2 会永远失败）；
+          #   2. 官方 CDN 不引入额外供应链面，URL 中版本即锚点。
+          BLENDER_VERSION="3.6.14"
+          URL="https://download.blender.org/release/Blender3.6/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          mkdir -p "${{ runner.temp }}/blender"
+          curl -fsSL "$URL" | tar -xJ -C "${{ runner.temp }}/blender"
+
+      - name: 定位 Blender 可执行文件
+        id: locate
+        run: |
+          set -euo pipefail
+          # 官方 tar.xz 解压出的目录名随版本而变（如 blender-3.6.14-linux-x64），
+          # 故用 glob 找可执行文件而不是硬编码路径。
+          BLENDER_BIN="$(find "${{ runner.temp }}/blender" -type f -name blender -perm -u+x | head -n 1)"
+          if [ -z "$BLENDER_BIN" ]; then
+            echo "::error::未找到 Blender 可执行文件（检查「安装 Blender」步骤）"
+            ls -R "${{ runner.temp }}/blender" || true
+            exit 1
+          fi
+          chmod +x "$BLENDER_BIN"
+          echo "path=$BLENDER_BIN" >> "$GITHUB_OUTPUT"
+          echo "Blender: $BLENDER_BIN"
+          "$BLENDER_BIN" --version | head -n 2
+
+      - name: 运行 4 个无头测试（强制退出码）
+        # 说明:
+        #   tests/ 下 4 个文件只 print 汇总、**不设退出码**，
+        #   直接 `blender --python` 会让失败也返回 0（假绿）。
+        #   故用 run_blender_tests.py 包一层，由它解析汇总行反推成败。
+        #
+        #   关于 test_native_equivalence.py:
+        #     本仓库**不含**跨平台预编译的 native/ 产物，
+        #     该文件会检测不到动态库而整体跳过并说明原因——
+        #     这是**预期行为**，故加 --allow-skip 让它记为 SKIP 而非 FAIL。
+        #     但跳过项会在日志里显式列出，不混入「全绿」。
+        run: |
+          python scripts/run_blender_tests.py \
+            --blender "${{ steps.locate.outputs.path }}" \
+            --allow-skip \
+            --verbose
+
+      - name: 汇总说明（跳过 ≠ 通过）
+        if: always()
+        run: |
+          {
+            echo "### Blender 无头测试完成"
+            echo ""
+            echo "| 项 | 说明 |"
+            echo "|---|---|"
+            echo "| blender_smoke_test.py | 插件注册 + 冒烟 |"
+            echo "| test_p0_fixes.py | P0 回归（数据安全 / 崩溃防护） |"
+            echo "| qa_adversarial_test.py | 对抗性测试（边界与回归） |"
+            echo "| test_native_equivalence.py | 原生内核等价性 —— **本仓库无"
+            echo "跨平台预编译产物，CI 上恒为 SKIP**（预期行为） |"
+            echo ""
+            echo "> 跳过 ≠ 通过。被跳过的用例，其覆盖路径本次**未被验证**。"
+            echo "> 完整明细见上方步骤日志。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# ============================================================================
+#  已知未覆盖（诚实声明，避免「全绿」被误读为「全都测过了」）:
+#
+#   · 源物体被**变换**后缓存是否返回旧位置的数据（键不含 matrix_world，
+#     见 docs/LIMITATIONS.md 第 12 条）—— 无自动化覆盖
+#   · 原生内核（native/）的跨平台等价性 —— 本仓库无预编译产物，
+#     CI 上恒为 SKIP；需自建 native/build.py 后本地验证
+#   · UI 交互、性能回归 —— 需人工 / 专门 benchmark
+#   · Blender 4.x 的兼容性 —— CI 只跑 3.6 LTS 一个版本
+# ============================================================================

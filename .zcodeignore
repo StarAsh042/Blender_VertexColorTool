@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 构建产物
+build/
+*.egg-info/
+
+# 注意: dist/ 刻意「不」忽略 —— 发行 zip 随版本一起提交，
+# 便于用户直接从仓库下载。重新打包请运行 scripts/build_zip.py
+
+# 原生库的链接器/调试产物（运行时只需要 .dll / .so / .dylib）
+native/bin/*.lib
+native/bin/*.pdb
+native/bin/*.exp
+native/bin/*.ilk
+native/obj/
+native/zig-cache/
+.zig-cache/
+
+# WorkBuddy 内部工作记录（不属于插件本体，本地保留）
+.workbuddy-ai/
+
+# 审计/交付报告（内部资料）
+deliverables/
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# AI 助手的本地工作目录（非项目文件，不应进版本库）
+.workbuddy/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
+
+# ZCode 会话本地工作目录（与 .gitignore 保持同步）
+.zcode/

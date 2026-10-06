@@ -9,6 +9,8 @@
       （这两个字段此前一直存在于数据模型却从未被赋值）。
     - P1-7 : 新增进度条反馈，用户可看到进度并可用 ESC 取消。
     - P2-18: 统一错误上报。
+    - 集合遍历改为递归：参考组/目标组现在包含所有层级的子集合
+      （旧实现只看直属物体，会漏掉嵌套子集合里的模型）。
 """
 
 import bpy
@@ -20,11 +22,12 @@ from ..utils.vertex_color_utils import (
     get_vertex_color_info,
 )
 from ..utils.logging_utils import log_error, report_error
+from ..utils.collection_utils import get_collection_objects
 from ..core.matching import (
     get_object_features,
-    calculate_similarity_score,
     cluster_target_objects,
     find_best_match_for_cluster,
+    find_best_matches,
 )
 
 
@@ -42,10 +45,32 @@ class VERTEXCOLOR_OT_FindMatches(bpy.types.Operator):
         - 使用加权相似度评分
         - 支持距离、尺寸、体积、顶点数等多维度匹配
         - 可配置的阈值和权重参数
+
+    匹配范围（v1.1.0 起变更）:
+        参考组与目标组均**递归包含所有层级的子集合**（旧实现只看直属
+        物体，嵌套子集合里的模型不会被匹配）。
     """
     bl_idname = "vertexcolor.find_matches"
     bl_label = "查找匹配"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        """
+        仅在参考组与目标组都已指定时可用（否则按钮变灰）。
+
+        为什么需要: 工作流是「1. 分析集合 → 2. 查找匹配 → 3. 复制顶点色」，
+        前置步骤没做完时按钮可点，只会得到一句报错 toast，
+        让人误以为按钮坏了。变灰表达的是「还没到这步」。
+
+        注意: poll 由 Blender 每帧调用，因此只做常量时间的属性读取，
+        不做任何集合遍历、bpy.data 查询或异常抛出。
+        """
+        scene = getattr(context, "scene", None)
+        vc_tool = getattr(scene, "vertex_color_tool", None)
+        if vc_tool is None:
+            return False
+        return bool(vc_tool.collection_a) and bool(vc_tool.collection_b)
 
     def execute(self, context):
         """
@@ -83,12 +108,12 @@ class VERTEXCOLOR_OT_FindMatches(bpy.types.Operator):
                 self.report({'ERROR'}, "集合不存在")
                 return {'CANCELLED'}
 
-            # 获取参考组中有顶点色的物体
+            # 获取参考组中有顶点色的物体（递归含所有子集合）
             source_objects = []
             source_features = {}
             specified_name = vc_tool.target_vcol_name if not vc_tool.use_active_vcol else None
 
-            for obj in collection_a.objects:
+            for obj in get_collection_objects(collection_a):
                 try:
                     if obj.type != 'MESH':
                         continue
@@ -116,11 +141,11 @@ class VERTEXCOLOR_OT_FindMatches(bpy.types.Operator):
                 self.report({'ERROR'}, "参考组中没有带顶点色的网格物体")
                 return {'CANCELLED'}
 
-            # 获取目标组中的目标物体
+            # 获取目标组中的目标物体（递归含所有子集合）
             target_objects = []
             target_features = {}
 
-            for obj in collection_b.objects:
+            for obj in get_collection_objects(collection_b):
                 try:
                     if obj.type == 'MESH':
                         features = get_object_features(obj)
@@ -186,30 +211,19 @@ class VERTEXCOLOR_OT_FindMatches(bpy.types.Operator):
                                 pass
 
                 else:
-                    # 为每个目标物体独立寻找最佳匹配
-                    for processed, target_obj in enumerate(target_objects):
+                    # 为每个目标物体独立寻找最佳匹配。
+                    # 走批量入口 find_best_matches：原生内核可用时一次性算完所有目标
+                    # （内部多线程），不可用时自动回退逐对 Python 计算。
+                    best_pairs = find_best_matches(
+                        source_objects, source_features,
+                        target_objects, target_features, vc_tool
+                    )
+
+                    for processed, (target_obj, pair) in enumerate(
+                        zip(target_objects, best_pairs)
+                    ):
+                        best_match, best_score = pair
                         try:
-                            target_feat = target_features.get(target_obj.name)
-                            if not target_feat:
-                                continue
-
-                            best_match = None
-                            best_score = 0.0
-
-                            for source_obj in source_objects:
-                                source_feat = source_features.get(source_obj.name)
-                                if not source_feat:
-                                    continue
-
-                                similarity = calculate_similarity_score(source_feat, target_feat, vc_tool)
-
-                                if similarity < vc_tool.match_similarity_threshold:
-                                    continue
-
-                                if similarity > best_score:
-                                    best_score = similarity
-                                    best_match = source_obj
-
                             if best_match and best_score >= vc_tool.min_confidence_score:
                                 vcol_layer, vcol_domain = get_vertex_color_info(best_match)
                                 match = vc_tool.match_results.add()
@@ -222,8 +236,7 @@ class VERTEXCOLOR_OT_FindMatches(bpy.types.Operator):
                                 match_count += 1
 
                         except Exception as e:
-                            log_error(f"匹配目标物体 {target_obj.name} 时出错", exc=e)
-                            continue
+                            log_error(f"写入目标物体 {target_obj.name} 的匹配结果时出错", exc=e)
 
                         if progress_active:
                             try:

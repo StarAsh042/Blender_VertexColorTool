@@ -34,6 +34,8 @@ INCLUDE = (
     "ui",
     "utils",
     "LICENSE",
+    # 原生加速库（若已构建）。缺失时插件会自动回退纯 Python，不影响安装。
+    "native/bin",
 )
 
 # 排除规则
@@ -41,7 +43,11 @@ EXCLUDE_DIRS = {
     "__pycache__", ".git", ".github", "dist", "build", "tests",
     ".workbuddy-ai", "deliverables", ".idea", ".vscode", ".venv", "venv",
 }
-EXCLUDE_EXT = {".pyc", ".pyo", ".pyd", ".blend1"}
+EXCLUDE_EXT = {
+    ".pyc", ".pyo", ".pyd", ".blend1",
+    # 链接器/调试产物：运行时加载 DLL 只需要 .dll 本身
+    ".lib", ".pdb", ".exp", ".ilk",
+}
 EXCLUDE_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 
 
@@ -136,6 +142,9 @@ def main():
             f"{PACKAGE_NAME}/core/cache.py",
             f"{PACKAGE_NAME}/ui/results_panel.py",
             f"{PACKAGE_NAME}/utils/logging_utils.py",
+            # 1.1.0 起算子顶层 import 的新模块——漏掉会导致插件
+            # 「加载成功」但分析/匹配算子静默缺失（import 失败被吞）
+            f"{PACKAGE_NAME}/utils/collection_utils.py",
         ]
         missing = [name for name in required if name not in names]
         if missing:

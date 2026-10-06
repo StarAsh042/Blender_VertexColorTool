@@ -124,33 +124,8 @@ class VERTEXCOLOR_OT_SelectNonPureVCol(bpy.types.Operator):
             return {'CANCELLED'}
 
 
-class VERTEXCOLOR_OT_ClearSelection(bpy.types.Operator):
-    """
-    清空当前选择
-
-    功能:
-        - 清空所有物体的选择状态
-        - 移除活动物体
-    """
-    bl_idname = "vertexcolor.clear_selection"
-    bl_label = "清空选择"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        """
-        清空当前选择
-
-        Returns:
-            set: Blender操作结果
-        """
-        try:
-            bpy.ops.object.select_all(action='DESELECT')
-            context.view_layer.objects.active = None
-
-            context.scene.vertex_color_tool.last_operation = "已清空选择"
-            self.report({'INFO'}, "已清空选择")
-            return {'FINISHED'}
-
-        except Exception as e:
-            report_error(self, context, f"清空选择时出错: {str(e)}", exc=e)
-            return {'CANCELLED'}
+# 注: 原VERTEXCOLOR_OT_ClearSelection（bl_idname="vertexcolor.clear_selection"）
+# 已删除。它只做「全不选 + 清active」，与 Blender 自带的 Alt+A
+# （及 3D 视图右键菜单「全不选」）完全重复，且在插件 UI 里 0 处入口、
+# 算子之间也无互调——属于用户既找不到、又不增加任何能力的纯冗余入口。
+# 删除后本模块的日志工具仍有使用者：上面两个算子都要先清空当前选择。
