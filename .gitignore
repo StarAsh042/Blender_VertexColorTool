@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+
+# Rust
+target/
+**/*.rs.bk
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+
+# 原生库的链接器与调试产物（运行时只需要 .dll）
+*.lib
+*.pdb
+*.exp
+*.ilk
+.zig-cache/
+
+# 内部工作记录
+.workbuddy/
+deliverables/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
