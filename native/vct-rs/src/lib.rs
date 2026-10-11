@@ -37,3 +37,5 @@ mod ffi;
 mod kdtree;
 
 mod matching;
+
+mod pick;

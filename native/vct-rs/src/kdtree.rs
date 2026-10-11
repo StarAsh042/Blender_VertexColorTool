@@ -190,6 +190,55 @@ impl KdTree {
         );
         dx * dx + dy * dy + dz * dz
     }
+
+    /// 树中的点数。FFI 层据此把法线数组换算成 `3 * 点数` 个元素。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// 返回落在 `radius_sq` 之内的全部 `(点下标, 距离平方)`。
+    ///
+    /// 结果按 `(距离平方, 点下标)` 升序。上层因此只需「严格更小才替换」，
+    /// 就自动实现「距离相同则取下标较小者」，无需重复比较下标。
+    ///
+    /// # 与 Python `mathutils.kdtree.find_range` 的关系
+    ///
+    /// 实测（Blender 3.4.1 无头）确认 `find_range` 按距离升序，但距离相等时的
+    /// 先后依赖插入顺序与树形。本方法把下标作为次级排序键，因此在**恰好等距**
+    /// 的场景下可能与 Python 不同——这是有意选的确定性行为，差异归类为 (iii)。
+    #[must_use]
+    pub fn range_query(&self, query: &[f32], radius_sq: f32) -> Vec<(u32, f32)> {
+        let mut out: Vec<(u32, f32)> = Vec::new();
+        if self.root >= 0 {
+            self.collect(self.root, query, radius_sq, &mut out);
+        }
+        out.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        out
+    }
+
+    /// 深度优先收集半径内的候选；只在可能更近时才探远端子树。
+    fn collect(&self, node_index: i32, query: &[f32], radius_sq: f32, out: &mut Vec<(u32, f32)>) {
+        let node = self.nodes[node_index as usize];
+        let d2 = self.squared_distance(node.point as usize, query);
+        if d2 <= radius_sq {
+            out.push((node.point, d2));
+        }
+        let axis = node.axis as usize;
+        let base = 3 * node.point as usize;
+        let diff = query[axis] - self.points[base + axis];
+        let (near, far) = if diff < 0.0 {
+            (node.left, node.right)
+        } else {
+            (node.right, node.left)
+        };
+        if near >= 0 {
+            self.collect(near, query, radius_sq, out);
+        }
+        if far >= 0 && diff * diff <= radius_sq {
+            self.collect(far, query, radius_sq, out);
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
