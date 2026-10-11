@@ -94,6 +94,42 @@ class _SpatialHash:
                             yield idx
 
 
+def _evaluated_mesh(obj):
+    """取物体的求值网格；取不到时退回原始网格。"""
+    try:
+        import bpy
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        mesh = obj.evaluated_get(depsgraph).to_mesh()
+        if mesh is not None:
+            return mesh
+    except Exception:  # noqa: BLE001  取不到就退回，不让整个特征提取失败
+        pass
+    return obj.data
+
+
+def _mesh_volume(mesh):
+    """用散度定理算多面体体积：V = |sum(dot(v0, cross(v1, v2)))| / 6。
+
+    返回 0.0 表示算不出来（空网格、非三角面、或网格非封闭）。
+    浮点求和用 numpy 完成，避免 Python 逐面循环成为瓶颈。
+    """
+    try:
+        import numpy as np
+        verts = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+        mesh.vertices.foreach_get('co', verts)
+        verts = verts.reshape(-1, 3)
+        loops = np.empty(len(mesh.loops), dtype=np.int32)
+        mesh.loops.foreach_get('vertex_index', loops)
+        tris = loops.reshape(-1, 3)
+        if tris.shape[0] == 0:
+            return 0.0
+        a, b, c = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
+        six_vol = np.abs(np.einsum('ij,ij->i', a, np.cross(b, c)).sum())
+        return float(six_vol / 6.0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def get_object_features(obj):
     """
     获取物体的特征向量（优化版）
@@ -112,15 +148,25 @@ def get_object_features(obj):
         if obj.type != 'MESH':
             return None
 
-        mesh = obj.data
+        # 特征必须与取色走同一套几何：取色用的是**求值网格**，
+        # 这里若用原始网格，修改器一旦改变顶��或面数，匹配就会按
+        # 「变形前」的统计去配「变形后」的物体，产生系统性偏差。
+        # 取不到求值网格时退回原始网格，不因此让整个操作失败。
+        mesh = _evaluated_mesh(obj)
+        volume = _mesh_volume(mesh)
+        if volume <= 0.0:
+            # 非封闭网格的散度定理会算出 0 或无意义的值。退回包围盒体积
+            # 虽然粗糙，但好过「恒为 0 导致所有物体的体积分完全相同」。
+            volume = obj.dimensions.x * obj.dimensions.y * obj.dimensions.z
         features = {
             'name': obj.name,
             'location': obj.location.copy(),
             'dimensions': obj.dimensions.copy(),
             'vertex_count': len(mesh.vertices),
             'polygon_count': len(mesh.polygons),
-            # 使用边界框体积的近似值
-            'volume': obj.dimensions.x * obj.dimensions.y * obj.dimensions.z,
+            # 真实网格体积（散度定理）。原先用包围盒三边之积，
+            # 与 dimensions 同源，等于把同一个信息在两个维度里各算一遍。
+            'volume': volume,
             'bounding_sphere_radius': max(obj.dimensions) * 0.5,
         }
 
