@@ -52,7 +52,7 @@ def check(name, cond, detail=""):
 # 从而在同一输入下产生可区分结果，变异即可被观测。
 #
 # 取值:
-#   'gt' —— 严格大于（与真实 C++ 语义一致，默认）
+#   'gt' —— 严格大于（与真实 原生 语义一致，默认）
 #   'ge' —— 大于等于（用于观测 >= 类变异）
 NATIVE_GT_MODE = 'gt'
 
@@ -63,7 +63,7 @@ def load_matching(force_native_available=None, tie_boost=None):
 
     Args:
         force_native_available:
-            None  -> 注入一个「行为与 C++ 一致」的 Python 模拟原生后端
+            None  -> 注入一个「行为与 原生 一致」的 Python 模拟原生后端
             False -> 注入一个恒返回 None 的后端（模拟原生不可用）
         tie_boost: 内部使用，人为制造并列最高分的乘数
     """
@@ -100,7 +100,7 @@ def load_matching(force_native_available=None, tie_boost=None):
     else:
         def _sim_match_best(source_features, target_features, vc_tool):
             """
-            按 vct_match_best 的真实语义模拟（C++ L338-L406）：
+            按 vct_match_best 的真实语义模拟（原生 L338-L406）：
               - 外层遍历 target、内层遍历 source
               - 距离早退 dist_sq > max^2 -> continue
               - 阈值 total < similarity_threshold -> continue
@@ -551,7 +551,7 @@ def run_equivalence():
     #   替身`tot > best_s`（严格）-> 保留**先遇到**的源
     #   替身改`tot >= best_s>     -> 保留**后遇到**的源
     # 两者返回**不同物体** -> 变异立刻可观测。
-    # 这也正是真实 C++ 内核「并列保留先遇到的」这条语义需要守护的地方。
+    # 这也正是真实 原生 内核「并列保留先遇到的」这条语义需要守护的地方。
     print("\n  --- 并列最高分边界（`>` vs `>=`，可观测）---")
     VCOL["map"] = {"t0": ("L0", "POINT")}
     tool_tie = Tool(distance_threshold=50.0, match_similarity_threshold=0.5)
@@ -871,7 +871,7 @@ def run_bench():
         print(f"{n_src:>8} | {t_ref * 1000:>11.3f} | {t_cur * 1000:>10.3f} | "
               f"{t_ref / t_cur if t_cur > 0 else 0:>7.2f}x")
 
-    print("\n说明: 原生路径在真实 Blender 中为多线程 C++ 内核，")
+    print("\n说明: 原生路径在真实 Blender 中为多线程 原生 内核，")
     print("      此处为Python 模拟实现，绝对值偏大但相对趋势有效。")
     print("=" * 74)
     return 0

@@ -565,7 +565,10 @@ class _PureMatrix:
 
 def _probe_native_gate(ops):
     """
-    探测「法线约束启用时是否绕过原生内核」。
+    探测「法线约束启用时是否仍然走原生内核」。
+
+    内核已实现法线约束（vct_kdtree_pick_constrained），
+    因此启用约束不再是绕过条件，而是「把参数交给内核」的条件。
 
     不依赖 numpy：原生分支内部会先调 _target_points_array（需要 numpy），
     在无 numpy 环境下会在那里抛异常并回退，导致 query_colors 永远不被调用——
@@ -1302,17 +1305,21 @@ def run_verification(core_dir=None):
     # --- 原生门控（批次 2 修正）---
     print(f"\n[H] 原生门控：法线约束启用时必须绕过原生内核")
     # 原生内核的 query_colors 只做纯距离最近，不实现法线约束。
-    # 若不禁用原生，就会出现「界面显示 75°、实际零效果」的静默失效。
+    # 内核已实现法线约束，启用时不再需要绕开——绕开反而会让大模型变慢。
     # 本组断言不依赖 numpy：直接检测「是否尝试调用原生内核」。
+    # 约束是否真的生效，由 tests/test_native_equivalence.py 的
+    # 两条路径逐元素比对负责（那里的比对覆盖法线约束场景）。
     gate = _probe_native_gate(ops)
     check("阈值 0：正常走原生内核（未被绕过）",
           gate["th0_tried_native"] is True,
           f"阈值0 尝试原生={gate['th0_tried_native']}")
-    check("阈值 75：绕过原生内核（未尝试调用）",
-          gate["th75_tried_native"] is False,
-          f"阈值75 尝试原生={gate['th75_tried_native']}（应为 False）")
-    check("阈值 75：已向用户说明改用 Python 路径",
-          gate["th75_logged"] is True,
+    check("阈值 75：仍走原生内核（约束交给内核实现）",
+          gate["th75_tried_native"] is True,
+          f"阈值75 尝试原生={gate['th75_tried_native']}（应为 True）")
+    # 不再回退 Python，就没有「改用 Python 路径」这条提示可言；
+    # 若它仍被触发，说明分支判断漏了某个条件。
+    check("阈值 75：不产生「改用 Python 路径」的误导提示",
+          gate["th75_logged"] is False,
           f"log_info 被调用={gate['th75_logged']}")
     check("阈值 0：不产生「改用 Python」的提示（无误导）",
           gate["th0_logged"] is False,

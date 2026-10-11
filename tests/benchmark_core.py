@@ -2,7 +2,7 @@
 核心运算基准测试（原生 vs Python A/B 对照）
 
 用途:
-    量化 C++ 原生内核相对纯 Python 实现的实际加速比，
+    量化 原生 原生内核相对纯 Python 实现的实际加速比，
     并给出各环节的耗时分解，作为优化是否达标的依据。
 
 运行:
@@ -131,7 +131,7 @@ def bench_copy():
 
     print(f"  {'实现':<28}{'耗时':>14}{'':>6}")
     print(f"  {'Python 实现':<28}{fmt(py_time):>14}")
-    print(f"  {'原生 C++ 内核':<28}{fmt(nat_time):>14}")
+    print(f"  {'原生 原生 内核':<28}{fmt(nat_time):>14}")
     print(f"  {'加速比':<28}{ratio(py_time, nat_time):>14}")
     print(f"  结果正确: Python={py_ok} 原生={nat_ok}")
     return py_time, nat_time
@@ -188,7 +188,7 @@ def bench_matching():
     )
 
     print(f"  {'Python 实现':<28}{fmt(py_time):>14}")
-    print(f"  {'原生 C++ 内核（多线程）':<28}{fmt(nat_time):>14}")
+    print(f"  {'原生 原生 内核（多线程）':<28}{fmt(nat_time):>14}")
     print(f"  {'加速比':<28}{ratio(py_time, nat_time):>14}")
     print(f"  结果一致: {'是' if mismatch == 0 else f'否（{mismatch} 项不一致）'}")
     return py_time, nat_time, mismatch
@@ -227,7 +227,7 @@ def bench_matching_large():
         lambda: find_best_matches(sources, source_feats, targets, target_feats, vc_tool),
         repeat=3,
     )
-    print(f"  {'原生 C++ 内核':<28}{fmt(nat_time):>14}")
+    print(f"  {'原生 原生 内核':<28}{fmt(nat_time):>14}")
     print(f"  每秒比较次数: {count * count / nat_time / 1e6:.1f} M/s")
     return nat_time
 

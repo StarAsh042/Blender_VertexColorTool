@@ -8,7 +8,7 @@
     3. 守护：目标完全在源范围内 -> 与关闭时**完全一致**（不回归）
     4. 交互：与法线约束共存（两个都开 / 只开一个 / 都关）语义正确
     5. 兜底：源退化（单顶点）时不误杀；两条约束的兜底一致
-    6. 门控：距离上限启用时必须绕过原生内核（否则界面显示已启用、实际无效）
+    6. 门控：距离上限启用时仍走原生内核（约束已在内核实现，绕开只会变慢）
     7. 尺度：按包围盒对角线归一化 -> 换模型尺寸依然有效
 
 每条关键断言都配有变异测试（--mutate），确保可证伪。
@@ -331,7 +331,9 @@ def scenario_interaction(ops):
 
 def probe_native_gate(ops):
     """
-    探测「距离上限启用时是否绕过原生内核」。
+    探测「距离上限启用时是否仍然走原生内核」。
+
+    内核已实现距离上限（vct_kdtree_pick_constrained），绕开不再必要。
 
     手法与 verify_normal_constraint._probe_native_gate 相同：
     把 _target_points_array（原生分支内第一个真正执行的函数）替换成探针。
@@ -768,76 +770,25 @@ def run_verification():
           "对照：正常源 + 关闭上限时 (1.5,1.5,1.5) 取到红色")
 
     # --- [J] 原生门控 ---
-    print("\n[J] 原生门控：距离上限启用时必须绕过原生内核")
+    print("\n[J] 原生门控：距离上限启用时仍走原生内核")
     gate = probe_native_gate(ops)
     check("[距离0|法线0] 正常走原生内核（未被绕过）",
           gate["d0_entered"] is True, f"尝试原生={gate['d0_entered']}")
     check("[距离0|法线0] 不产生「改用 Python」的提示（无误导）",
           gate["d0_logged"] is False, f"log_info={gate['d0_logged']}")
-    check("[距离10%|法线0] 绕过原生内核（未尝试调用）",
-          gate["d10_entered"] is False,
-          f"尝试原生={gate['d10_entered']}（应为 False）")
-    check("[距离10%|法线0] 已向用户说明改用 Python 路径",
-          gate["d10_logged"] is True, f"log_info={gate['d10_logged']}")
-    check("[距离10%|法线75] 绕过原生内核（两条约束任一启用即绕过）",
-          gate["both_entered"] is False,
-          f"尝试原生={gate['both_entered']}（应为 False）")
+    check("[距离10%|法线0] 仍走原生内核（上限交给内核实现）",
+          gate["d10_entered"] is True,
+          f"尝试原生={gate['d10_entered']}（应为 True）")
+    check("[距离10%|法线0] 不产生「改用 Python 路径」的误导提示",
+          gate["d10_logged"] is False, f"log_info={gate['d10_logged']}")
+    check("[距离10%|法线75] 仍走原生内核（两项约束都由内核实现）",
+          gate["both_entered"] is True,
+          f"尝试原生={gate['both_entered']}（应为 True）")
 
-    # --- [K] 提示文案不得只提法线 ---
-    print("\n[K] 提示文案：只开距离上限时不得只提「法线夹角约束」")
-    msgs = []
-    old_log = ops.log_info
-    ops.log_info = lambda msg, *a, **k: msgs.append(msg)
-    try:
-        from verify_normal_constraint import (
-            _FakeMeshForTargets, _FakeVertexGroup, _FakeVert, _Identity, KDTree)
-        for (ang, dist) in ((0.0, 10.0), (75.0, 0.0), (75.0, 10.0)):
-            sv2, sn2, sc2 = make_source_cube()
-
-            class NT:
-                def __getattr__(self, item):
-                    raise RuntimeError("probe")
-
-            class _Slot:
-                __slots__ = ('color',)
-
-                def __init__(self):
-                    self.color = (0, 0, 0, 1)
-
-            class Layer:
-                name = "Color"
-                domain = 'POINT'
-                data = [_Slot()]
-
-            sd = {'vertices': sv2, 'vertex_colors': sc2, 'kd': KDTree(sv2),
-                  'normals': sn2 if ang > 0 else None,
-                  'native_tree': NT(), 'colors_dense': None}
-            me = types.SimpleNamespace(vertices=_FakeVertexGroup(
-                [_FakeVert(Vector(0.5, 0.5, 0.5), Vector(0, 0, 1), 0)]))
-            to = types.SimpleNamespace(name="T",
-                                       data=_FakeMeshForTargets(1),
-                                       matrix_world=_Identity())
-            msgs.clear()
-            try:
-                ops._write_colors_to_target(to, me, Layer(), sd,
-                                            Tool(ang, dist))
-            except Exception:
-                pass
-            captured = msgs[0] if msgs else ""
-            if (ang, dist) == (0.0, 10.0):
-                check("只开距离上限 -> 提示提到「取色距离上限」",
-                      "取色距离上限" in captured, f"提示={captured[:60]}")
-                check("只开距离上限 -> 提示未误报「法线夹角约束」",
-                      "法线夹角" not in captured, f"提示={captured[:60]}")
-            elif (ang, dist) == (75.0, 10.0):
-                check("两个都开 -> 提示同时提到两个约束",
-                      "法线夹角约束" in captured and "取色距离上限" in captured,
-                      f"提示={captured[:70]}")
-                check("两个都开 -> 提示说明恢复方式为「都设为 0」",
-                      "都设为 0" in captured, f"提示={captured[:70]}")
-    finally:
-        ops.log_info = old_log
-
+    # --- [K] 原「提示文案不得只提法线」一段已删除 ---
+    # 起因：约束启用时不再回退 Python，那条「改用 Python 路径」的提示随之消失，
+    # 整段断言的是一个已不存在的行为。约束是否真的生效，改由
+    # tests/test_native_equivalence.py 的两条路径逐元素比对负责。
     # --- [L] 参数存在性 ---
     print("\n[L] 参数：pick_distance_percent 已在 settings 中定义且默认 0")
     settings_src = open(
