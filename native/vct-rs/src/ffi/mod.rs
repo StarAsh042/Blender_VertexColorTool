@@ -22,6 +22,8 @@ use core::slice;
 
 use crate::error::VctError;
 
+pub mod exports;
+
 /// 按 `len` 个元素构造只读 `f32` 切片。
 ///
 /// 长度为 0 时返回空切片，**不要求** `ptr` 非空——
