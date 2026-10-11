@@ -26,10 +26,11 @@ import zipfile
 PACKAGE_NAME = "Blender_VertexColorTool"
 
 # 原生库的「已知良好」SHA256（发布物完整性守护）。
-# 重新编译 native/vct_native.cpp 后此值必然变化——构建会失败，
+# 重新编译 native/vct-rs 后此值必然变化——构建会失败，
 # 此时人工核对构建来源可信后，更新此常量再重新打包。
-# 现值对应: zig 构建的 Windows x64 vct_native.dll（v1.1.0 发布时点起记录）。
-KNOWN_DLL_SHA256 = "c2f66a2208a8ed4f6533d145edb2b72a0bc35e8ed6db2e4dbfe4972081323de0"
+# 现值对应: cargo build --release 产出的 Windows x64 vct_native.dll。
+# 该值与 native/bin/build-info.json 中记录的保持一致，可交叉核对。
+KNOWN_DLL_SHA256 = "a6ecbf3b1da036a28e9540a3caaa082846a18ccae38e9c7ed79523a8cc803f6c"
 
 # 需要打进包的内容（相对项目根目录）
 INCLUDE = (
@@ -51,6 +52,8 @@ EXCLUDE_DIRS = {
 }
 EXCLUDE_EXT = {
     ".pyc", ".pyo", ".pyd", ".blend1",
+    # 构建脚本在覆盖安装前会留一份 .bak；它既无用又会混淆产物校验
+    ".bak",
     # 链接器/调试产物：运行时加载 DLL 只需要 .dll 本身
     ".lib", ".pdb", ".exp", ".ilk",
 }
