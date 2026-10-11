@@ -10,6 +10,19 @@
 #![deny(unsafe_code)]
 #![warn(clippy::pedantic)]
 #![deny(missing_docs)]
+// 以下 lint 与本项目的既定语义冲突，逐条论证后关闭（不是为了"让门禁变绿"）：
+//
+// - float_cmp：并列最近邻「取全局下标较小者」的判据**就是**严格相等比较。
+//   换成带容差的比较会让"恰好等距"不可判定，结果随浮点噪声漂移。
+// - cast_possible_truncation / cast_sign_loss：点下标与节点下标在
+//   u32 / usize / i32 之间往返。上界由 FFI 的 i32 计数参数决定，
+//   远小于各类型的表示范围。
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 
 mod error;
 

@@ -12,6 +12,11 @@
 //! 分支定界的遍历顺序依赖树的形状，若用「先遇到者胜」，
 //! 同样的输入在不同遍历路径下可能选中不同的点。
 
+// 本模块的公开方法要到 FFI 导出提交才被 crate 之外调用。
+// 在那之前 lib 目标视角下它们不可达（测试不计入可达性），会被判死代码。
+// 该豁免在 FFI 导出落地后即可移除。
+#![allow(dead_code)]
+
 use crate::error::VctError;
 
 /// 树中的一个节点。左右子树用下标表达而非引用，
@@ -80,11 +85,13 @@ impl KdTree {
         let axis = self.max_span_axis(order, lo, hi);
         let mid = lo + (hi - lo) / 2;
 
-        // 用不稳定选择做中位数分割：不需要额外分配，也不需要稳定排序。
+        // 对子区间做不稳定排序：整体有序后，中位数必然落在 mid。
+        // 用 total_cmp 而非 <，是为 NaN 给出确定次序，否则排序结果不可复现。
         let coords = &self.points;
-        order[lo..hi].select_nth_unstable_by(|a, b| {
-            let va = coords[3 * *a as usize + axis as usize];
-            let vb = coords[3 * *b as usize + axis as usize];
+        let ax = axis as usize;
+        order[lo..hi].sort_unstable_by(|a, b| {
+            let va = coords[3 * *a as usize + ax];
+            let vb = coords[3 * *b as usize + ax];
             va.total_cmp(&vb)
         });
 
@@ -130,27 +137,86 @@ impl KdTree {
         }
         best as u8
     }
-}
 
+    /// 返回离 `query` 最近的点的全局下标与距离平方。
+    ///
+    /// 距离完全相等时取下标较小者（见模块文档的决胜规则）。
+    /// 树为空时返回 `None`。
+    pub fn nearest(&self, query: &[f32]) -> Option<(u32, f32)> {
+        if self.root < 0 {
+            return None;
+        }
+        let mut best: Option<(u32, f32)> = None;
+        self.search(self.root, query, &mut best);
+        best
+    }
+
+    /// 分支定界搜索：只有当查询点到分割超平面的距离小于当前最优距离时才探远端。
+    fn search(&self, node_index: i32, query: &[f32], best: &mut Option<(u32, f32)>) {
+        let node = self.nodes[node_index as usize];
+        let base = 3 * node.point as usize;
+        let dist_sq = self.squared_distance(node.point as usize, query);
+
+        let better = match *best {
+            None => true,
+            Some((idx, d)) => dist_sq < d || (dist_sq == d && node.point < idx),
+        };
+        if better {
+            *best = Some((node.point, dist_sq));
+        }
+
+        let diff = query[node.axis as usize] - self.points[base + node.axis as usize];
+        let (near, far) = if diff < 0.0 {
+            (node.left, node.right)
+        } else {
+            (node.right, node.left)
+        };
+        if near >= 0 {
+            self.search(near, query, best);
+        }
+        let cutoff = best.map_or(0.0, |(_, d)| d);
+        if far >= 0 && diff * diff <= cutoff {
+            self.search(far, query, best);
+        }
+    }
+
+    /// 点 `index` 到查询点的距离平方。
+    fn squared_distance(&self, index: usize, query: &[f32]) -> f32 {
+        let base = index * 3;
+        let (dx, dy, dz) = (
+            self.points[base] - query[0],
+            self.points[base + 1] - query[1],
+            self.points[base + 2] - query[2],
+        );
+        dx * dx + dy * dy + dz * dz
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::KdTree;
     use crate::error::VctError;
-
+    #[test]
+    fn finds_exact_hit() {
+        let pts = [0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0];
+        let tree = KdTree::build(&pts).expect("应可建树");
+        let (idx, d2) = tree.nearest(&[5.0, 5.0, 5.0]).expect("应命中点 1");
+        assert_eq!(idx, 1);
+        assert_eq!(d2, 0.0);
+    }
     #[test]
     fn builds_from_single_point() {
         let tree = KdTree::build(&[1.0, 2.0, 3.0]).expect("单点应可建树");
-        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.nodes.len(), 1);
     }
 
     #[test]
     fn builds_from_eight_cube_corners() {
         let pts = [
-            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
-            1.0, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, // 0
+            0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ];
         let tree = KdTree::build(&pts).expect("8 点应可建树");
-        assert_eq!(tree.len(), 8);
+        assert_eq!(tree.nodes.len(), 8);
     }
 
     #[test]
@@ -168,6 +234,6 @@ mod tests {
     fn handles_all_points_coincident() {
         let pts = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0];
         let tree = KdTree::build(&pts).expect("全部重合也应可建树");
-        assert_eq!(tree.len(), 3);
+        assert_eq!(tree.nodes.len(), 3);
     }
 }
