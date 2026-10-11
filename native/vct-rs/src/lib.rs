@@ -10,3 +10,7 @@
 #![deny(unsafe_code)]
 #![warn(clippy::pedantic)]
 #![deny(missing_docs)]
+
+mod error;
+
+pub use error::VctError;
