@@ -24,6 +24,7 @@ use crate::error::VctError;
 
 pub mod kdtree_exports;
 pub mod matching_exports;
+pub mod pick_exports;
 
 /// 按 `len` 个元素构造只读 `f32` 切片。
 ///
