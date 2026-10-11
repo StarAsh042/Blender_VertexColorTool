@@ -1,0 +1,39 @@
+name: rust-gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新提交会取消仍在跑的旧 CI，避免结果互相覆盖。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Rust 门禁
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: native/vct-rs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 稳定版门禁
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo build --workspace --all-targets
+          cargo test --workspace --all-features
+          cargo test --workspace --doc
+          cargo doc --workspace --no-deps
+
+      - name: MSRV 编译检查
+        # A5 要求 CI 必须用 MSRV 跑一次编译检查，
+        # 以防有人在稳定版上用了高于 MSRV 的语法或库特性。
+        run: |
+          rustup toolchain install 1.74 --profile minimal
+          cargo +1.74 build --workspace --all-targets
