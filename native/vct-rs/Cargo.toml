@@ -1,0 +1,28 @@
+[package]
+name = "vct-native"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.74"
+description = "顶点色复制工具的原生计算内核"
+license = "MIT"
+publish = false
+
+[lib]
+name = "vct_native"
+# cdylib 供 ctypes 加载；rlib 供 cargo test --doc 与 cargo doc 使用——
+# 这两个命令在只有 cdylib 的包上会直接报「无库目标」。
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+# 零第三方依赖。
+# 理由：产物是通过 ctypes 加载的动态库，任何引入的 crate 都可能带入
+# 非系统 DLL 依赖，而 native/build.py 的 inspect_binary 会因此判定构建失败。
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# panic 跨 FFI 边界是未定义行为，必须在编译期就禁止展开。
+panic = "abort"
+strip = true

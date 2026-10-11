@@ -1,0 +1,4 @@
+# 目标矩阵仅 Windows x64（规范 C6）。
+# 显式写出而非依赖默认，避免在装有 MinGW 的机器上悄悄切到 gnu 工具链。
+[build]
+target = "x86_64-pc-windows-msvc"
