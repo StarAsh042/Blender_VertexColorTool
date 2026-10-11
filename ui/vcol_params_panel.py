@@ -2,6 +2,8 @@
 优化处理子面板
 """
 
+import os
+
 import bpy
 
 
@@ -115,15 +117,20 @@ class VERTEXCOLOR_PT_VColorParamsPanel(bpy.types.Panel):
 
         layout.separator(factor=0.5)
 
-        # 原生加速（C++ 内核）
+        # 原生加速
         col = layout.column(align=True)
         col.label(text="原生加速:", icon='CPU')
-        col.prop(vc_tool, "use_native_accel", text="使用 C++ 内核", toggle=True)
+        col.prop(vc_tool, "use_native_accel", text="使用原生内核", toggle=True)
 
-        # 状态提示：让用户明确知道当前走的是原生还是回退路径
+        # 状态提示必须落到「具体是哪一份产物」上。
+        # 静默降级时用户唯一能察觉到的现象就是变慢，给出文件名与 ABI 版本
+        # 才能让「变慢了」变成「哦，原来加载的是它」。
         from ..core import native_backend
-        if native_backend.is_available():
-            col.label(text="已启用（多线程）", icon='CHECKMARK')
+        abi = native_backend.abi_version()
+        if abi is not None:
+            path = native_backend.loaded_path() or ""
+            name = os.path.basename(path) if path else "未知文件"
+            col.label(text=f"已启用：{name} · ABI {abi}", icon='CHECKMARK')
         else:
             col.label(text="不可用，已回退纯 Python", icon='ERROR')
             reason = native_backend.describe_failure()

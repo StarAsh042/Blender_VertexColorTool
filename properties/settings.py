@@ -417,8 +417,8 @@ class VertexColorToolSettings(bpy.types.PropertyGroup):
         name="原生加速",
         default=True,
         description=(
-            "使用 C++ 原生内核加速「物体匹配」与「顶点色复制」"
-            "（多线程）。原生库不可用时自动回退纯 Python，不影响功能"
+            "使用原生内核加速「物体匹配」与「顶点色复制」。"
+            "原生库不可用时自动回退纯 Python，不影响任何功能"
         )
     )
 

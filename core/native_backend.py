@@ -260,6 +260,26 @@ def describe_failure():
     return None if _lib is not None else _load_error
 
 
+def abi_version():
+    """返回实际加载到的 ABI 版本；未加载时为 None。
+
+    面板用它告诉用户「到底加载了哪一份产物」，
+    而不是笼统地说「已启用」——静默降级时用户唯一能察觉的就是变慢。
+    """
+    if not ensure_loaded() or _lib is None:
+        return None
+    try:
+        return int(_lib.vct_api_version())
+    except Exception:  # noqa: BLE001  诊断路径上的异常不应影响插件可用性
+        return None
+
+
+def loaded_path():
+    """返回实际加载到的库文件路径；未加载时为 None。"""
+    ensure_loaded()
+    return _load_path
+
+
 # ---------------------------------------------------------------------------
 # 数组辅助
 # ---------------------------------------------------------------------------
