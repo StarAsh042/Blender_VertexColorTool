@@ -14,3 +14,7 @@
 mod error;
 
 pub use error::VctError;
+
+mod types;
+
+pub use types::{ObjectFeatures, ABI_VERSION};
