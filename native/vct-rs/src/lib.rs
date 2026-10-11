@@ -35,3 +35,5 @@ pub use types::{ObjectFeatures, ABI_VERSION};
 mod ffi;
 
 mod kdtree;
+
+mod matching;
