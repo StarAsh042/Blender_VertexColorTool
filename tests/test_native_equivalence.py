@@ -187,9 +187,6 @@ def test_match_random():
         ("仅距离", dict(distance_threshold=100.0, position_decay_factor=0.5,
                        distance_weight=1.0, size_weight=0.0, volume_weight=0.0,
                        vertex_count_weight=0.0, match_similarity_threshold=0.0)),
-        ("全零权重", dict(distance_threshold=100.0, position_decay_factor=0.5,
-                         distance_weight=0.0, size_weight=0.0, volume_weight=0.0,
-                         vertex_count_weight=0.0, match_similarity_threshold=0.0)),
     ]
 
     original = {}
@@ -204,6 +201,40 @@ def test_match_random():
     finally:
         for key, value in original.items():
             setattr(vc_tool, key, value)
+
+
+def test_zero_weights_rejected():
+    """四权重全零时必须报错，而不是安静地返回 0 分。
+
+    这不是等价性用例——它校验的是「拒绝」这个契约本身。
+    校验点必须在原生 / Python 两条路径的分岔点上，
+    否则会出现「一半报错、一半静默返回 0」的行为分叉。
+    """
+    from Blender_VertexColorTool.core import matching as matching_mod
+
+    vc_tool = bpy.context.scene.vertex_color_tool
+    keys = ("distance_weight", "size_weight", "volume_weight",
+            "vertex_count_weight")
+    original = {k: getattr(vc_tool, k) for k in keys}
+    try:
+        for k in keys:
+            setattr(vc_tool, k, 0.0)
+        raised = False
+        try:
+            matching_mod.find_best_matches(
+                [bpy.data.objects[0]],
+                {"x": make_feature((0, 0, 0), (1, 1, 1), 8)},
+                [bpy.data.objects[0]],
+                {"x": make_feature((0, 0, 0), (1, 1, 1), 8)},
+                vc_tool,
+            )
+        except ValueError:
+            raised = True
+        check("全零权重被显式拒绝", raised,
+              "应当抛 ValueError，而不是返回全 0 分")
+    finally:
+        for k, v in original.items():
+            setattr(vc_tool, k, v)
 
 
 def test_match_edge_cases():
@@ -573,6 +604,7 @@ def main():
         run_case("A. 后端可用性", test_backend_availability)
         run_case("B. 匹配内核等价性（随机+多参数）", test_match_random)
         run_case("B. 匹配内核等价性（边界）", test_match_edge_cases)
+        run_case("B. 全零权重必须被拒绝", test_zero_weights_rejected)
         run_case("C. KDTree 取色等价性", test_kdtree_equivalence)
         run_case("D. 回退开关一致性", test_fallback_toggle)
         run_case("E. 端到端匹配等价性", test_end_to_end_equivalence)

@@ -262,11 +262,6 @@ def calculate_similarity_score(source_feat, target_feat, vc_tool):
             total_similarity += scores[score_key] * weight
             total_weight += weight
 
-        # 归一化之前必须先确认权重不是全零：全零时 total_weight <= 0.001，
-        # 加权和恒为 0，用户只会看到「全都不匹配」而得不到任何提示。
-        # 这不是一份有效配置，应当明确报错而不是安静地返回 0。
-        if total_weight <= 0.001:
-            raise ValueError("四个相似度权重全为 0（或总和过小），无法计算相似度")
         total_similarity = total_similarity / total_weight
 
         return max(0.0, min(1.0, total_similarity))
@@ -660,6 +655,19 @@ def find_best_matches(source_objects, source_features,
         return []
     if not source_objects:
         return [(None, 0.0)] * len(target_objects)
+
+    # 权重校验必须放在这里——原生内核与 Python 逐对计算这两条路径的**分岔点**。
+    # 只在 calculate_similarity_score 里校验是不够的：那条函数只在 Python
+    # 回退时才走到，原生路径仍会跑完并静默返回全 0 分，
+    # 结果是同一份配置「一半报错、一半不报」的行为分叉。
+    total_weight = sum(
+        float(getattr(vc_tool, key, 0.0) or 0.0) for _, key in SIMILARITY_METRICS
+    )
+    if total_weight <= 0.001:
+        raise ValueError(
+            "四个相似度权重全为 0（或总和过小），相似度无从计算；"
+            "请至少给其中一个维度一个非零权重"
+        )
 
     source_feat_list = [source_features.get(obj.name) for obj in source_objects]
     target_feat_list = [target_features.get(obj.name) for obj in target_objects]

@@ -107,13 +107,21 @@ class VERTEXCOLOR_PT_ResultsPanel(bpy.types.Panel):
 
         # 概要统计
         total = len(vc_tool.match_results)
-        high_count = sum(1 for m in vc_tool.match_results if m.confidence >= 80)
+        # 分档门槛必须与「最小置信度」设置对齐：低于它的匹配根本不会被采纳，
+        # 留在这里算「建议复核」会让用户以为自己还能用它们。
+        floor = float(getattr(vc_tool, 'min_confidence_score', 0.0) or 0.0)
+        high_cut = max(floor, 0.8)
+        high_count = sum(1 for m in vc_tool.match_results if m.confidence >= high_cut * 100)
         review_count = total - high_count
 
         box = layout.box()
         col = box.column(align=True)
         col.label(text=f"共 {total} 条匹配", icon='ZOOM_ALL')
-        col.label(text=f"高置信度(≥80%): {high_count} ／ 建议复核: {review_count}")
+        col.label(text=f"高置信度(≥{high_cut * 100:.0f}%): {high_count} ／ 建议复核: {review_count}")
+        col.label(
+            text=f"采纳门槛为最小置信度 {floor * 100:.0f}%，低于它的已被丢弃",
+            icon='INFO',
+        )
 
         # 列表
         row = layout.row()
