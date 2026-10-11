@@ -137,8 +137,9 @@ def test_backend_availability():
         return
 
     lib = native_backend._lib
-    check("ABI 版本正确", lib.vct_api_version() == 1,
-          f"版本={lib.vct_api_version()}")
+    expected_abi = native_backend._EXPECTED_API_VERSION
+    check("ABI 版本正确", lib.vct_api_version() == expected_abi,
+          f"版本={lib.vct_api_version()} 期望={expected_abi}")
     check("库内自检通过", lib.vct_self_test() == 0)
 
 

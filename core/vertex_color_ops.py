@@ -812,44 +812,6 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
     # 否则会出现「为性能绕过原生、但约束其实没生效」这类静默失效。
     distance_enabled = _distance_constraint_enabled(vc_tool)
 
-    # === 原生加速路径（KDTree 查询 + 批量写入）===
-    # 命中时完全跳过 Python 逐顶点循环与逐元素 RNA 写入。
-    #
-    # 门控（重要）: 原生内核的 vct_kdtree_query_colors 只做纯距离最近邻，
-    # **既不实现法线约束，也不实现距离上限**。若在任一约束启用时仍走原生路径，
-    # 就会出现「界面显示已启用 75° / 上限 N%、实际完全无效」的静默失效——
-    # 与本轮修复的预览态污染、错误信息不可见属于同类问题。
-    # 因此这里显式绕过原生，走 Python 路径。
-    # 代价：大模型取色会变慢（用户可将两个阈值都设为 0 换回原生加速，
-    #详见 docs/LIMITATIONS.md 9.1）。
-    #
-    # 两个约束是「或」关系（各自独立生效），任一启用即绕过原生；
-    # 提示文案必须同时说明两者，否则用户只会去调错那一个。
-    need_python = normal_enabled or distance_enabled
-    native_tree = source_data.get('native_tree')
-    if native_tree is not None and not need_python:
-        try:
-            target_points = _target_points_array(target_mesh_eval, matrix_world)
-            out_colors = native_tree.query_colors(
-                source_data['colors_dense'], target_points
-            )
-            _apply_colors_bulk(target_layer, out_colors, target_mesh)
-            return True
-        except Exception as e:
-            # 原生路径出任何问题都不能让复制失败，回退 Python 实现
-            log_warning(f"原生取色失败，本次回退 Python 实现: {e}")
-    elif native_tree is not None and need_python:
-        reasons = []
-        if normal_enabled:
-            reasons.append("法线夹角约束")
-        if distance_enabled:
-            reasons.append("取色距离上限")
-        log_info(
-            f"{'、'.join(reasons)}已启用，本次改用 Python 取色路径"
-            "（原生内核暂不支持这两项约束）。"
-            "如需恢复原生加速，请将对应阈值都设为 0。"
-        )
-
     # === Python 路径（原有实现，作为回退）===
     target_vertices = [matrix_world @ v.co for v in target_mesh_eval.vertices]
 
@@ -907,6 +869,38 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
                     target_normals = None
             if target_normals is None:
                 angle_threshold = 0.0  # 源有法线但目标取不到 -> 退回原行为
+
+    # === 原生加速路径（KDTree 查询 + 批量写入）===
+    # 命中时完全跳过 Python 逐顶点循环与逐元素 RNA 写入。
+    #
+    # 这一段**必须**放在约束准备之后：法线夹角与距离上限的参数在上面已经算好，
+    # 两条路径共用同一份。若在别处再判一次「有没有启用约束」，
+    # 就会出现「界面显示已启用 75°、实际完全无效」���静默失效。
+    native_tree = source_data.get('native_tree')
+    if native_tree is not None:
+        try:
+            target_points = _target_points_array(target_mesh_eval, matrix_world)
+            if normal_enabled or distance_enabled:
+                # 内核已实现这两项约束，语义与 Python 路径一致
+                #（含八轮扩张、半径被上限夹住、以及兜底退回最近点）。
+                picked = native_tree.pick_indices(
+                    source_data.get('normals'), target_points,
+                    target_normals, angle_threshold, max_dist_sq,
+                )
+                dense = source_data['colors_dense']
+                out_colors = np.zeros((picked.shape[0], 4), dtype=np.float32)
+                # 下标 -1 表示内核判定「不写入该点」，保持原色（全 0 即未写入）。
+                hit = picked >= 0
+                out_colors[hit] = dense[picked[hit]]
+            else:
+                out_colors = native_tree.query_colors(
+                    source_data['colors_dense'], target_points
+                )
+            _apply_colors_bulk(target_layer, out_colors, target_mesh)
+            return True
+        except Exception as e:
+            # 原生路径出任何问题都不能让复制失败，回退 Python 实现
+            log_warning(f"原生取色失败，本次回退 Python 实现: {e}")
 
     if is_attribute:
         if use_kdtree:
