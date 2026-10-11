@@ -23,6 +23,7 @@ use core::slice;
 use crate::error::VctError;
 
 pub mod cluster_exports;
+pub mod exports;
 pub mod kdtree_exports;
 pub mod matching_exports;
 pub mod pick_exports;

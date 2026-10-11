@@ -7,8 +7,8 @@
        若用 CPython 扩展（.pyd），一旦用户升级 Blender 就会失效。
     2. **静默降级**：库缺失、ABI 版本不符、加载失败时一律回退纯 Python 实现。
        插件在任何平台都必须可用，二进制只是加速项而非硬依赖。
-    3. **零拷贝传参**：所有数组以连续 float32 的 numpy 数组传入，
-       直接暴露其数据指针，不产生中间拷贝。
+    3. **零拷贝传参**：几何数组以连续 numpy 数组传入，直接暴露其数据指针；
+       特征与参数走 `repr(C)` 结构体数组，与 Rust 侧布局逐字段对应。
     4. **生命周期安全**：DLL 若崩溃/未加载，Python 侧绝不解引用空指针；
        所有 ctypes 调用前都做句柄与形状校验。
 """
@@ -21,8 +21,8 @@ import numpy as np
 
 from ..utils.logging_utils import log_warning
 
-# 必须与 native/vct_native.h 中的 VCT_API_VERSION 一致
-_EXPECTED_API_VERSION = 1
+# 必须与 native/vct-rs 中的 ABI_VERSION 一致
+_EXPECTED_API_VERSION = 2
 
 _lib = None
 _load_attempted = False
@@ -53,10 +53,56 @@ def _candidate_paths():
     )
 
 
+class ObjectFeatures(ctypes.Structure):
+    """与 Rust 侧 `#[repr(C)] struct ObjectFeatures` 逐字段对应。
+
+    布局为 3+3+1+1+1 个 f64 = 72 字节，`repr(C)` 下无重排、无填充，
+    因此 Rust 侧可直接按下标解读，Python 侧也无需任何解析。
+    """
+
+    _fields_ = [
+        ("location", ctypes.c_double * 3),
+        ("dimensions", ctypes.c_double * 3),
+        ("volume", ctypes.c_double),
+        ("vertex_count", ctypes.c_double),
+        ("bounding_radius", ctypes.c_double),
+    ]
+
+
+class MatchParams(ctypes.Structure):
+    """与 Rust 侧 `MatchParams` 对应。字段顺序即 ABI 契约，不可调换。"""
+
+    _fields_ = [
+        ("distance_threshold", ctypes.c_double),
+        ("position_decay_factor", ctypes.c_double),
+        ("w_distance", ctypes.c_double),
+        ("w_size", ctypes.c_double),
+        ("w_volume", ctypes.c_double),
+        ("w_vertex", ctypes.c_double),
+        ("similarity_threshold", ctypes.c_double),
+    ]
+
+
+class ClusterParams(ctypes.Structure):
+    """与 Rust 侧 `ClusterParams` 对应。"""
+
+    _fields_ = [
+        ("distance_threshold", ctypes.c_double),
+        ("clustering_threshold", ctypes.c_double),
+    ]
+
+
+def _features_ptr(buf):
+    """结构体数组的首元素地址。"""
+    return ctypes.cast(buf, ctypes.POINTER(ObjectFeatures))
+
+
 def _configure_signatures(lib):
     """声明各导出函数的参数与返回类型，避免 ctypes 误判导致内存错误"""
     f32_p = ctypes.POINTER(ctypes.c_float)
+    f64_p = ctypes.POINTER(ctypes.c_double)
     i32_p = ctypes.POINTER(ctypes.c_int)
+    feat_p = ctypes.POINTER(ObjectFeatures)
 
     lib.vct_api_version.restype = ctypes.c_int
     lib.vct_api_version.argtypes = []
@@ -70,24 +116,29 @@ def _configure_signatures(lib):
     lib.vct_kdtree_free.restype = None
     lib.vct_kdtree_free.argtypes = [ctypes.c_void_p]
 
-    lib.vct_kdtree_query_colors.restype = ctypes.c_int
-    lib.vct_kdtree_query_colors.argtypes = [
-        ctypes.c_void_p, f32_p, f32_p, ctypes.c_int, f32_p,
-    ]
-
     lib.vct_kdtree_query_indices.restype = ctypes.c_int
     lib.vct_kdtree_query_indices.argtypes = [
         ctypes.c_void_p, f32_p, ctypes.c_int, i32_p, f32_p,
     ]
 
+    # max_dist_sq < 0 表示关闭距离上限；0 是合法上限值（恰好命中），
+    # 所以不能用 0 表示「关闭」。
+    lib.vct_kdtree_pick_constrained.restype = ctypes.c_int
+    lib.vct_kdtree_pick_constrained.argtypes = [
+        ctypes.c_void_p, f64_p, f32_p, f64_p, ctypes.c_int,
+        ctypes.c_double, ctypes.c_double, i32_p,
+    ]
+
     lib.vct_match_best.restype = ctypes.c_int
     lib.vct_match_best.argtypes = [
-        f32_p, f32_p, f32_p, f32_p, f32_p, ctypes.c_int,
-        f32_p, f32_p, f32_p, f32_p, f32_p, ctypes.c_int,
-        ctypes.c_float, ctypes.c_float,
-        ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float,
-        ctypes.c_float,
-        i32_p, f32_p,
+        feat_p, ctypes.c_int, feat_p, ctypes.c_int,
+        ctypes.POINTER(MatchParams), i32_p, f64_p,
+    ]
+
+    lib.vct_cluster_targets.restype = ctypes.c_int
+    lib.vct_cluster_targets.argtypes = [
+        feat_p, ctypes.c_int, ctypes.POINTER(ClusterParams),
+        i32_p, i32_p, i32_p,
     ]
 
 
@@ -229,6 +280,13 @@ def _float_ptr(array):
     return array.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
 
+def _float64_ptr(array):
+    """f64 数组的指针。array 为 None 时返回空指针。"""
+    if array is None:
+        return None
+    return array.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+
 def _int_ptr(array):
     return array.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
 
@@ -282,24 +340,16 @@ class NativeKDTree:
             raise RuntimeError("KDTree 句柄已释放")
 
         src_colors = _as_float32_2d(colors, 4)
-        tgt = _as_float32_2d(target_points, 3)
-
         if src_colors.shape[0] != self._count:
             raise ValueError(
                 f"颜色数量 {src_colors.shape[0]} 与树内点数 {self._count} 不一致"
             )
 
-        target_count = tgt.shape[0]
-        out = np.empty((target_count, 4), dtype=np.float32)
-        if target_count == 0:
-            return out
-
-        rc = _lib.vct_kdtree_query_colors(
-            self._handle, _float_ptr(src_colors), _float_ptr(tgt),
-            target_count, _float_ptr(out),
-        )
-        if rc != 0:
-            raise RuntimeError(f"原生取色失败（返回码 {rc}）")
+        indices, _ = self.query_indices(target_points)
+        out = np.zeros((indices.shape[0], 4), dtype=np.float32)
+        # 下标为 -1 表示内核判定「不写入该点」，保持原色（全 0 即未写入）。
+        hit = indices >= 0
+        out[hit] = src_colors[indices[hit]]
         return out
 
     def query_indices(self, target_points):
@@ -322,6 +372,55 @@ class NativeKDTree:
             raise RuntimeError(f"原生查询失败（返回码 {rc}）")
         return indices, dist_sq
 
+    def pick_indices(self, src_normals, target_points, target_normals,
+                     angle_threshold_deg=0.0, max_dist_sq=None):
+        """带距离硬边界与法线精修的取色，返回每个目标点的源顶点下标。
+
+        Args:
+            src_normals: (N, 3) 源法线，f64。传 None 表示不启用法线约束。
+            target_points: (M, 3) 目标坐标，f32
+            target_normals: (M, 3) 目标法线，f64。传 None 表示不启用法线约束。
+            angle_threshold_deg: 法线夹角阈值（度）。<= 0 关闭约束。
+            max_dist_sq: 取色距离上限（**平方**）。None 表示不启用。
+
+        Returns:
+            (M,) int32 数组；-1 表示判定为「不写入」。
+        """
+        if self._handle is None:
+            raise RuntimeError("KDTree 句柄已释放")
+
+        tgt = _as_float32_2d(target_points, 3)
+        target_count = tgt.shape[0]
+        out = np.full(target_count, -1, dtype=np.int32)
+        if target_count == 0:
+            return out
+
+        normals = None
+        if src_normals is not None:
+            normals = np.ascontiguousarray(src_normals, dtype=np.float64).ravel()
+            if normals.size != self._count * 3:
+                raise ValueError(
+                    f"法线数量 {normals.size // 3} 与树内点数 {self._count} 不一致"
+                )
+        tnorms = None
+        if target_normals is not None:
+            tnorms = np.ascontiguousarray(
+                target_normals, dtype=np.float64
+            ).ravel()
+
+        limit = -1.0 if max_dist_sq is None else float(max_dist_sq)
+        rc = _lib.vct_kdtree_pick_constrained(
+            self._handle,
+            _float64_ptr(normals) if normals is not None else None,
+            _float_ptr(tgt),
+            _float64_ptr(tnorms) if tnorms is not None else None,
+            target_count,
+            float(angle_threshold_deg), limit, _int_ptr(out),
+        )
+        if rc != 0:
+            raise RuntimeError(f"原生受约束取色失败（返回码 {rc}）")
+        return out
+
     def close(self):
         if self._handle is not None:
             try:
@@ -338,27 +437,22 @@ class NativeKDTree:
 # 物体匹配
 # ---------------------------------------------------------------------------
 
-def _stack_features(features):
-    """把特征字典列表压成并列的 numpy 数组"""
+def _pack_features(features):
+    """把特征字典列表打包成连续的 ObjectFeatures 数组。
+
+    字段全部走 f64：评分要参与 0.7 这类阈值比较，用 f32 会在边界引入舍入。
+    """
     count = len(features)
-    loc = np.empty((count, 3), dtype=np.float32)
-    dim = np.empty((count, 3), dtype=np.float32)
-    vol = np.empty(count, dtype=np.float32)
-    vcount = np.empty(count, dtype=np.float32)
-    radius = np.empty(count, dtype=np.float32)
-
+    buf = (ObjectFeatures * count)()
     for i, feat in enumerate(features):
-        loc[i, 0] = feat['location'][0]
-        loc[i, 1] = feat['location'][1]
-        loc[i, 2] = feat['location'][2]
-        dim[i, 0] = feat['dimensions'][0]
-        dim[i, 1] = feat['dimensions'][1]
-        dim[i, 2] = feat['dimensions'][2]
-        vol[i] = feat['volume']
-        vcount[i] = feat['vertex_count']
-        radius[i] = feat['bounding_sphere_radius']
-
-    return loc, dim, vol, vcount, radius
+        item = buf[i]
+        for axis in range(3):
+            item.location[axis] = float(feat['location'][axis])
+            item.dimensions[axis] = float(feat['dimensions'][axis])
+        item.volume = float(feat['volume'])
+        item.vertex_count = float(feat['vertex_count'])
+        item.bounding_radius = float(feat['bounding_sphere_radius'])
+    return buf
 
 
 def match_best(source_features, target_features, vc_tool):
@@ -379,26 +473,75 @@ def match_best(source_features, target_features, vc_tool):
     if not source_features or not target_features:
         return None
 
-    s_loc, s_dim, s_vol, s_vc, s_rad = _stack_features(source_features)
-    t_loc, t_dim, t_vol, t_vc, t_rad = _stack_features(target_features)
+    src = _pack_features(source_features)
+    tgt = _pack_features(target_features)
+
+    params = MatchParams(
+        distance_threshold=float(vc_tool.distance_threshold),
+        position_decay_factor=float(vc_tool.position_decay_factor),
+        w_distance=float(vc_tool.distance_weight),
+        w_size=float(vc_tool.size_weight),
+        w_volume=float(vc_tool.volume_weight),
+        w_vertex=float(vc_tool.vertex_count_weight),
+        similarity_threshold=float(vc_tool.match_similarity_threshold),
+    )
 
     target_count = len(target_features)
     best_index = np.empty(target_count, dtype=np.int32)
-    best_score = np.empty(target_count, dtype=np.float32)
+    best_score = np.empty(target_count, dtype=np.float64)
 
     rc = _lib.vct_match_best(
-        _float_ptr(s_loc), _float_ptr(s_dim), _float_ptr(s_vol),
-        _float_ptr(s_vc), _float_ptr(s_rad), len(source_features),
-        _float_ptr(t_loc), _float_ptr(t_dim), _float_ptr(t_vol),
-        _float_ptr(t_vc), _float_ptr(t_rad), target_count,
-        float(vc_tool.distance_threshold), float(vc_tool.position_decay_factor),
-        float(vc_tool.distance_weight), float(vc_tool.size_weight),
-        float(vc_tool.volume_weight), float(vc_tool.vertex_count_weight),
-        float(vc_tool.match_similarity_threshold),
-        _int_ptr(best_index), _float_ptr(best_score),
+        _features_ptr(src), len(source_features),
+        _features_ptr(tgt), target_count,
+        ctypes.byref(params),
+        _int_ptr(best_index), _float64_ptr(best_score),
     )
     if rc != 0:
         log_warning(f"原生匹配内核返回错误码 {rc}，本次回退 Python 实现")
         return None
 
     return best_index, best_score
+
+
+# ---------------------------------------------------------------------------
+# 目标物体聚类
+# ---------------------------------------------------------------------------
+
+def cluster_targets(features, distance_threshold, clustering_threshold):
+    """
+    对目标物体做贪心聚类（原生内核）。
+
+    Args:
+        features: 特征字典列表
+        distance_threshold: 距离阈值；聚类半径取其一半
+        clustering_threshold: 簇内相似度门槛
+
+    Returns:
+        嵌套列表（每簇一个成员下标列表）；原生不可用时返回 None，由调用方回退。
+    """
+    if not ensure_loaded():
+        return None
+    if not features:
+        return []
+
+    count = len(features)
+    packed = _pack_features(features)
+    params = ClusterParams(
+        distance_threshold=float(distance_threshold),
+        clustering_threshold=float(clustering_threshold),
+    )
+    members = np.empty(count, dtype=np.int32)
+    offsets = np.empty(count + 1, dtype=np.int32)
+    cluster_count = ctypes.c_int(0)
+
+    rc = _lib.vct_cluster_targets(
+        _features_ptr(packed), count, ctypes.byref(params),
+        _int_ptr(members), _int_ptr(offsets), ctypes.byref(cluster_count),
+    )
+    if rc != 0:
+        log_warning(f"原生聚类内核返回错误码 {rc}，本次回退 Python 实现")
+        return None
+
+    total = cluster_count.value
+    bounds = offsets[:total + 1]
+    return [members[bounds[i]:bounds[i + 1]].tolist() for i in range(total)]
