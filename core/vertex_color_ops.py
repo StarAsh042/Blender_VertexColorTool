@@ -812,7 +812,7 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
     # 否则会出现「为性能绕过原生、但约束其实没生效」这类静默失效。
     distance_enabled = _distance_constraint_enabled(vc_tool)
 
-    # === 原生加速路径（C++ KDTree 查询 + 批量写入）===
+    # === 原生加速路径（KDTree 查询 + 批量写入）===
     # 命中时完全跳过 Python 逐顶点循环与逐元素 RNA 写入。
     #
     # 门控（重要）: 原生内核的 vct_kdtree_query_colors 只做纯距离最近邻，

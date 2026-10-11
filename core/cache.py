@@ -160,7 +160,7 @@ def _active_color_path(vc_tool):
         'python-normal'       仅法线约束启用 -> 强制 Python 路径
         'python-distance'     仅取色距离上限启用 -> 强制 Python 路径
         'python-constraints'  两条约束同时启用 -> 强制 Python 路径
-        'native'              约束全关且原生可用 -> 原生 C++ 内核
+        'native'              约束全关且原生可用 -> 原生内核
         'python'              其余情况（dll 缺失 / 用户关闭加速 / numpy 缺失）
 
     存在的意义: 两条约束均未在原生内核实现，任一启用都会绕过原生。

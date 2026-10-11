@@ -1,0 +1,14 @@
+# 统一行尾符：仓库内一律存 LF，检出时不做转换。
+# 理由：Rust 与 YAML 生态对 CRLF 敏感；混用会让 diff 出现整文件噪声。
+* text=auto eol=lf
+
+*.rs text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+
+# 二进制，不做行尾转换
+*.dll binary
+*.zip binary
+*.png binary

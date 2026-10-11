@@ -38,7 +38,7 @@ _FAILURE_COLLECT_LIMIT = 50
 # 两条约束启用时都会绕过原生内核（原生暂未实现这两个约束），
 # 报告里如实显示当前路径，避免「显示与实际不符」。
 _COLOR_PATH_LABELS = {
-    'native': '原生内核（C++）',
+    'native': '原生内核',
     'python': 'Python',
     'python-normal': 'Python（法线约束已启用）',
     'python-distance': 'Python（取色距离上限已启用）',

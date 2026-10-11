@@ -438,12 +438,12 @@ def find_best_match_for_cluster(cluster_indices, target_objects, target_features
         原实现对**每个簇**都用纯 Python 逐对遍历全部源物体调用
         calculate_similarity_score，这是聚类模式下的主要耗时来源。
         现改为复用非聚类路径已有的 native_backend.match_best
-        （内部多线程 + 向量化），**零 ABI 变更、零 C++ 改动**。
+        （原生实现），**零 ABI 变更**。
 
     语义等价性（已逐行核对 vct_match_best 实现）:
-        - 距离早退：C++ L357 `dist_sq > max_distance_sq` continue
+        - 距离早退：`dist_sq > max_distance_sq` 则跳过该候选
           ↔ Python L127 超过阈值return 0.0
-        - 取最高：C++ L403 严格 `>`（并列时保留先遇到的）
+        - 取最高：严格 `>`（并列时保留源数组中下标较小者）
           ↔ Python L465 严格 `>`，即并列取源物体顺序靠前的
         - 方向：`vct_match_best` 外层遍历 target、内层遍历 source
           （L338/L349）↔ 本函数「1 个代表元 target 找 1 个 source」
@@ -593,7 +593,7 @@ def find_best_matches(source_objects, source_features,
     """
     为每个目标物体寻找最佳源物体（批量入口）。
 
-    优先使用原生 C++ 内核（内部多线程）；原生不可用或调用异常时
+    优先使用原生内核；原生不可用或调用异常时
     回退到逐对 Python 计算。两条路径的数值语义完全一致
     （原生内核按同一公式实现，并有等价性测试守护）。
 
