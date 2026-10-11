@@ -196,14 +196,6 @@ mod tests {
     use super::KdTree;
     use crate::error::VctError;
     #[test]
-    fn finds_exact_hit() {
-        let pts = [0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0];
-        let tree = KdTree::build(&pts).expect("应可建树");
-        let (idx, d2) = tree.nearest(&[5.0, 5.0, 5.0]).expect("应命中点 1");
-        assert_eq!(idx, 1);
-        assert_eq!(d2, 0.0);
-    }
-    #[test]
     fn builds_from_single_point() {
         let tree = KdTree::build(&[1.0, 2.0, 3.0]).expect("单点应可建树");
         assert_eq!(tree.nodes.len(), 1);
@@ -235,5 +227,31 @@ mod tests {
         let pts = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0];
         let tree = KdTree::build(&pts).expect("全部重合也应可建树");
         assert_eq!(tree.nodes.len(), 3);
+    }
+    #[test]
+    fn finds_exact_hit() {
+        let pts = [0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0];
+        let tree = KdTree::build(&pts).expect("应可建树");
+        let (idx, d2) = tree.nearest(&[5.0, 5.0, 5.0]).expect("应命中点 1");
+        assert_eq!(idx, 1);
+        assert_eq!(d2, 0.0);
+    }
+
+    #[test]
+    fn picks_lower_index_on_exact_tie() {
+        // (0,0,0) 与 (2,0,0) 到 (1,0,0) 的距离平方都是 1。
+        let pts = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 9.0, 9.0];
+        let tree = KdTree::build(&pts).expect("应可建树");
+        let (idx, d2) = tree.nearest(&[1.0, 0.0, 0.0]).expect("应命中并列点之一");
+        assert_eq!(idx, 0, "并列时必须取全局下标较小者");
+        assert_eq!(d2, 1.0);
+    }
+
+    #[test]
+    fn nearest_on_single_point_tree() {
+        let tree = KdTree::build(&[3.0, 4.0, 0.0]).expect("应可建树");
+        let (idx, d2) = tree.nearest(&[0.0, 0.0, 0.0]).expect("单点树必能命中");
+        assert_eq!(idx, 0);
+        assert_eq!(d2, 25.0);
     }
 }
