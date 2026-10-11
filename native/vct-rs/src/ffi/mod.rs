@@ -13,16 +13,16 @@
 //! 若不这样做的后果：无法从 ctypes 边界接收任何裸指针数组，
 //! 整个 crate 失去与 Python 通信的能力，等于无法完成移植。
 
-// 本模块的三个函数要到下一个提交（接入 exports）才有调用方。
-// 这是垂直切片的引入顺序造成的，不是死代码；等 exports 落地后即可移除。
-#![allow(dead_code)]
 #![allow(unsafe_code)]
+// as_f64_slice（法线用）要到约束取色切片才被调用；
+// 其余切片辅助函数也尚未被 kdtree_exports 全部用到。
+#![allow(dead_code)]
 
 use core::slice;
 
 use crate::error::VctError;
 
-pub mod exports;
+pub mod kdtree_exports;
 
 /// 按 `len` 个元素构造只读 `f32` 切片。
 ///
@@ -74,6 +74,25 @@ pub unsafe fn as_f64_slice<'a>(ptr: *const f64, len: usize) -> Result<&'a [f64],
 /// 当 `len > 0` 时，调用方必须保证 `ptr` 非空、指向至少 `len` 个
 /// 连续可写且对齐正确的 `i32`，并在切片存活期间不并发访问该内存。
 pub unsafe fn as_i32_slice_mut<'a>(ptr: *mut i32, len: usize) -> Result<&'a mut [i32], VctError> {
+    if len == 0 {
+        return Ok(&mut []);
+    }
+    if ptr.is_null() {
+        return Err(VctError::NullInput);
+    }
+    // SAFETY: 调用方已承诺可写且容量足够；长度非零已由上面的分支排除。
+    Ok(slice::from_raw_parts_mut(ptr, len))
+}
+
+/// 按 `len` 个元素构造可变 `f32` 切片。
+///
+/// 用于承接 FFI 的输出缓冲（如距离平方数组）。
+///
+/// # Safety
+///
+/// 当 `len > 0` 时，调用方必须保证 `ptr` 非空、指向至少 `len` 个
+/// 连续可写且对齐正确的 `f32`，并在切片存活期间不并发访问该内存。
+pub unsafe fn as_f32_slice_mut<'a>(ptr: *mut f32, len: usize) -> Result<&'a mut [f32], VctError> {
     if len == 0 {
         return Ok(&mut []);
     }
