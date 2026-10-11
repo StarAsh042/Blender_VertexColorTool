@@ -216,9 +216,12 @@ def calculate_similarity_score(source_feat, target_feat, vc_tool):
             total_similarity += scores[score_key] * weight
             total_weight += weight
 
-        # 权重归一化
-        if total_weight > 0.001:
-            total_similarity = total_similarity / total_weight
+        # 归一化之前必须先确认权重不是全零：全零时 total_weight <= 0.001，
+        # 加权和恒为 0，用户只会看到「全都不匹配」而得不到任何提示。
+        # 这不是一份有效配置，应当明确报错而不是安静地返回 0。
+        if total_weight <= 0.001:
+            raise ValueError("四个相似度权重全为 0（或总和过小），无法计算相似度")
+        total_similarity = total_similarity / total_weight
 
         return max(0.0, min(1.0, total_similarity))
 
