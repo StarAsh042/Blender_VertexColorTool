@@ -151,7 +151,7 @@ pub fn best_match(
 
 #[cfg(test)]
 mod tests {
-    use super::{similarity, MatchParams};
+    use super::{best_match, py_max, py_max3, similarity, MatchParams};
     use crate::types::ObjectFeatures;
 
     fn obj(x: f64, y: f64, z: f64, size: f64, vol: f64, verts: f64) -> ObjectFeatures {
@@ -176,11 +176,24 @@ mod tests {
         }
     }
 
+    fn zero_weights() -> MatchParams {
+        MatchParams {
+            w_distance: 0.0,
+            w_size: 0.0,
+            w_volume: 0.0,
+            w_vertex: 0.0,
+            ..params()
+        }
+    }
+
     #[test]
     fn identical_objects_score_one() {
         let a = obj(1.0, 2.0, 3.0, 2.0, 8.0, 100.0);
         let got = similarity(&a, &a, &params());
-        assert!((got - 1.0).abs() < 1e-12, "完全相同的物体应为 1.0，实际 {got}");
+        assert!(
+            (got - 1.0).abs() < 1e-12,
+            "完全相同的物体应为 1.0，实际 {got}"
+        );
     }
 
     #[test]
@@ -199,5 +212,55 @@ mod tests {
         let s_near = similarity(&a, &near, &p);
         let s_far = similarity(&a, &far, &p);
         assert!(s_near > s_far, "近的应比远的分高：{s_near} vs {s_far}");
+    }
+
+    #[test]
+    fn zero_weights_skip_normalisation_and_score_zero() {
+        let a = obj(1.0, 1.0, 1.0, 2.0, 8.0, 100.0);
+        assert_eq!(
+            similarity(&a, &a, &zero_weights()),
+            0.0,
+            "权重全 0 时不得归一化，结果应恒为 0"
+        );
+    }
+
+    #[test]
+    fn py_max_propagates_nan_like_python() {
+        let nan = f64::NAN;
+        assert!(py_max(nan, 1.0).is_nan(), "py_max(NaN, 1.0) 必须返回 NaN");
+        assert!(py_max3(nan, 1.0, 2.0).is_nan(), "三参 max 同样必须传播 NaN");
+        // 对照：f64::max 会忽略 NaN，这正是本模块不用它的原因。
+        assert_eq!(
+            f64::max(nan, 1.0),
+            1.0,
+            "f64::max 忽略 NaN，是本模块绕开它的理由"
+        );
+    }
+
+    #[test]
+    fn non_finite_input_stays_in_range() {
+        let inf = f64::INFINITY;
+        let a = obj(inf, 0.0, 0.0, inf, inf, inf);
+        let b = obj(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+        let got = similarity(&a, &b, &params());
+        assert!((0.0..=1.0).contains(&got), "结果必须仍在 [0,1]，实际 {got}");
+    }
+
+    #[test]
+    fn tie_keeps_lower_source_index() {
+        let t = obj(1.0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        let left = obj(0.0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        let right = obj(2.0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        let (idx, _) = best_match(&[left, right], &t, &params()).expect("应能找到匹配");
+        assert_eq!(idx, 0, "并列时必须取源数组中下标最小者");
+    }
+
+    #[test]
+    fn below_threshold_candidate_is_rejected() {
+        let t = obj(1000.0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        let far = obj(0.0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        let mut p = params();
+        p.similarity_threshold = 0.7;
+        assert_eq!(best_match(&[far], &t, &p), None, "低于阈值必须淘汰");
     }
 }
