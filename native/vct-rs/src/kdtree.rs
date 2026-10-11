@@ -130,4 +130,44 @@ impl KdTree {
         }
         best as u8
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::KdTree;
+    use crate::error::VctError;
+
+    #[test]
+    fn builds_from_single_point() {
+        let tree = KdTree::build(&[1.0, 2.0, 3.0]).expect("单点应可建树");
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn builds_from_eight_cube_corners() {
+        let pts = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+            1.0, 0.0, 1.0, 1.0, 1.0,
+        ];
+        let tree = KdTree::build(&pts).expect("8 点应可建树");
+        assert_eq!(tree.len(), 8);
+    }
+
+    #[test]
+    fn rejects_empty_point_set() {
+        assert_eq!(KdTree::build(&[]).err(), Some(VctError::EmptyPointSet));
+    }
+
+    #[test]
+    fn rejects_length_not_multiple_of_three() {
+        let got = KdTree::build(&[0.0, 1.0]);
+        assert!(matches!(got, Err(VctError::LengthMismatch { .. })));
+    }
+
+    #[test]
+    fn handles_all_points_coincident() {
+        let pts = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0];
+        let tree = KdTree::build(&pts).expect("全部重合也应可建树");
+        assert_eq!(tree.len(), 3);
+    }
+}
