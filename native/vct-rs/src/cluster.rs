@@ -167,3 +167,120 @@ pub fn cluster_targets(fs: &[ObjectFeatures], p: &ClusterParams) -> Vec<Vec<u32>
     }
     clusters
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{cluster_targets, target_similarity, ClusterParams};
+    use crate::types::ObjectFeatures;
+
+    fn obj(x: f64, y: f64, size: f64, vol: f64, verts: f64) -> ObjectFeatures {
+        ObjectFeatures {
+            location: [x, y, 0.0],
+            dimensions: [size, size, size],
+            volume: vol,
+            vertex_count: verts,
+            bounding_radius: size,
+        }
+    }
+
+    fn params(threshold: f64) -> ClusterParams {
+        ClusterParams {
+            distance_threshold: 10.0,
+            clustering_threshold: threshold,
+        }
+    }
+
+    #[test]
+    fn empty_input_yields_no_clusters() {
+        assert_eq!(
+            cluster_targets(&[], &params(0.8)).len(),
+            0,
+            "空输入不得产出簇"
+        );
+    }
+
+    #[test]
+    fn single_object_is_its_own_cluster() {
+        let got = cluster_targets(&[obj(0.0, 0.0, 1.0, 1.0, 10.0)], &params(0.8));
+        assert_eq!(got, vec![vec![0]]);
+    }
+
+    #[test]
+    fn near_similar_objects_share_a_cluster() {
+        let fs = vec![obj(0.0, 0.0, 1.0, 1.0, 10.0), obj(0.3, 0.2, 1.0, 1.0, 10.0)];
+        let got = cluster_targets(&fs, &params(0.8));
+        assert_eq!(got, vec![vec![0, 1]], "相近且相似的应同簇");
+    }
+
+    #[test]
+    fn distant_objects_stay_separate() {
+        let fs = vec![
+            obj(0.0, 0.0, 1.0, 1.0, 10.0),
+            obj(100.0, 0.0, 1.0, 1.0, 10.0),
+        ];
+        let got = cluster_targets(&fs, &params(0.8));
+        assert_eq!(got, vec![vec![0], vec![1]], "超距必须分开");
+    }
+
+    #[test]
+    fn dissimilar_shape_stays_separate() {
+        // 距离很近但体积差一个量级，相似度应低于阈值。
+        let fs = vec![
+            obj(0.0, 0.0, 1.0, 1.0, 10.0),
+            obj(0.1, 0.0, 1.0, 1000.0, 10.0),
+        ];
+        let got = cluster_targets(&fs, &params(0.95));
+        assert_eq!(got, vec![vec![0], vec![1]], "形状差异大不应同簇");
+    }
+
+    #[test]
+    fn greedy_order_is_deterministic_across_runs() {
+        // 三点：0 与 1 近，2 孤立。反复调用结果必须完全一致。
+        let fs = vec![
+            obj(0.0, 0.0, 1.0, 1.0, 10.0),
+            obj(0.2, 0.0, 1.0, 1.0, 10.0),
+            obj(90.0, 0.0, 1.0, 1.0, 10.0),
+        ];
+        let first = cluster_targets(&fs, &params(0.8));
+        for _ in 0..50 {
+            assert_eq!(
+                cluster_targets(&fs, &params(0.8)),
+                first,
+                "聚类结果必须可复现"
+            );
+        }
+        assert_eq!(first, vec![vec![0, 1], vec![2]]);
+    }
+
+    #[test]
+    fn cluster_members_are_ascending() {
+        let fs = vec![
+            obj(0.0, 0.0, 1.0, 1.0, 10.0),
+            obj(0.3, 0.0, 1.0, 1.0, 10.0),
+            obj(0.1, 0.0, 1.0, 1.0, 10.0),
+        ];
+        let got = cluster_targets(&fs, &params(0.8));
+        assert_eq!(got, vec![vec![0, 1, 2]], "簇内必须按下标升序");
+    }
+
+    #[test]
+    fn zero_radius_falls_back_to_linear_scan() {
+        // 距离阈值为 0 -> 半径为 0，退回线性扫描路径，不应崩溃。
+        let fs = vec![obj(0.0, 0.0, 1.0, 1.0, 10.0), obj(0.0, 0.0, 1.0, 1.0, 10.0)];
+        let p = ClusterParams {
+            distance_threshold: 0.0,
+            clustering_threshold: 0.8,
+        };
+        assert_eq!(cluster_targets(&fs, &p).len(), 1, "退化路径仍应产出簇");
+    }
+
+    #[test]
+    fn similarity_is_four_weight_equal_average() {
+        let a = obj(0.0, 0.0, 1.0, 1.0, 10.0);
+        let b = obj(0.0, 0.0, 1.0, 1.0, 10.0);
+        assert!(
+            (target_similarity(&a, &b, 0.0) - 1.0).abs() < 1e-12,
+            "完全相同的两点相似度应为 1.0"
+        );
+    }
+}
