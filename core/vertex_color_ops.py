@@ -802,6 +802,19 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
     matrix_world = target_obj.matrix_world
     target_mesh = target_obj.data
 
+    # 原始网格与求值网格的顶点数必须一致，否则下面的「按 loop 写入」会串位：
+    # 求值网格多出来的面会被算到原始网格的 loop 上，把颜色写到别的顶点。
+    # 修改器改变拓扑时（Subdivision / Decimate / Solidify）两者就不同。
+    # 这里必须拒绝而不是硬写——写错不会报错，只会静默污染。
+    if len(target_mesh_eval.vertices) != len(target_mesh.vertices):
+        log_error(
+            "目标物体的修改器改变了拓扑，已中止写入以免写到错误的顶点",
+            target=target_obj.name,
+            base_count=len(target_mesh.vertices),
+            evaluated_count=len(target_mesh_eval.vertices),
+        )
+        return False
+
     # === 法线约束是否启用（阶段 B / 批次 2 修正）===
     # 只判断一次并复用：既用于「是否绕过原生内核」的门控，
     # 也用于后面的阈值读取，避免写两套判断导致二者不一致。
