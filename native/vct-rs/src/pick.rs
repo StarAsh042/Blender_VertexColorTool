@@ -126,3 +126,172 @@ pub fn pick_one(
     // 4. 兜底：退回纯距离最近点（已通过距离校验）。
     Some(nearest)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_one, PickParams};
+    use crate::kdtree::KdTree;
+
+    fn pair() -> KdTree {
+        KdTree::build(&[0.0, 0.0, 0.0, 10.0, 0.0, 0.0]).expect("应可建树")
+    }
+
+    fn off() -> PickParams {
+        PickParams {
+            angle_threshold_deg: 0.0,
+            max_dist_sq: None,
+        }
+    }
+
+    #[test]
+    fn distance_limit_rejects_far_targets() {
+        let t = pair();
+        let p = PickParams {
+            angle_threshold_deg: 0.0,
+            max_dist_sq: Some(1.0),
+        };
+        assert_eq!(
+            pick_one(&t, None, &[5.0, 0.0, 0.0], None, &p),
+            None,
+            "超上限必须拒绝"
+        );
+    }
+
+    #[test]
+    fn threshold_zero_disables_normal_constraint() {
+        let t = pair();
+        let normals = [0.0, 1.0, 0.0, 0.0, -1.0, 0.0];
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.5, 0.0, 0.0],
+            Some(&[0.0, 1.0, 0.0]),
+            &off(),
+        );
+        assert_eq!(got, Some(0), "阈值 0 时应直接取最近点");
+    }
+
+    #[test]
+    fn missing_normals_falls_back_to_nearest() {
+        let t = pair();
+        let p = PickParams {
+            angle_threshold_deg: 75.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(&t, None, &[0.5, 0.0, 0.0], Some(&[0.0, 0.0, 1.0]), &p);
+        assert_eq!(got, Some(0), "缺源法线时必须退回纯距离最近");
+    }
+
+    #[test]
+    fn thin_wall_picks_the_near_side() {
+        // 薄壁两侧：源 0 在 -z 侧，源 1 在 +z 侧；目标法线朝 +z。
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.4]).expect("应可建树");
+        let normals = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0];
+        let p = PickParams {
+            angle_threshold_deg: 75.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.05],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(1), "薄壁应选中朝向一致的那一面");
+    }
+
+    #[test]
+    fn normal_mismatch_expands_and_finds_compatible() {
+        // 兼容点放在 z=0.2：8 轮翻倍从 1e-3 出发最远覆盖 0.256，必须落在射程内。
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.2]).expect("应可建树");
+        let normals = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0];
+        let p = PickParams {
+            angle_threshold_deg: 30.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.0],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(1), "应扩张搜索并选中朝向兼容的点");
+    }
+
+    #[test]
+    fn expansion_gives_up_after_eight_rounds() {
+        // 兼容点在 z=5，8 轮翻倍最远只到 0.256，必然够不着 —— 必须退回最近点。
+        // 这条锁定的是「扩张轮数上限」这个刻意的行为，而非疏漏。
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 5.0]).expect("应可建树");
+        let normals = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0];
+        let p = PickParams {
+            angle_threshold_deg: 30.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.0],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(0), "8 轮内够不着时应退回最近点");
+    }
+
+    #[test]
+    fn no_compatible_candidate_falls_back_to_nearest() {
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.4]).expect("应可建树");
+        let normals = [0.0, 0.0, -1.0, 0.0, 0.0, -1.0];
+        let p = PickParams {
+            angle_threshold_deg: 10.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.0],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(0), "找不到兼容候选时必须退回最近点");
+    }
+
+    #[test]
+    fn distance_limit_also_bounds_the_expansion() {
+        // 兼容候选在 z=5，远超上限 4；扩张半径被夹住后只能退回最近点。
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 5.0]).expect("应可建树");
+        let normals = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0];
+        let p = PickParams {
+            angle_threshold_deg: 30.0,
+            max_dist_sq: Some(4.0),
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.0],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(0), "扩张半径被上限夹住时只能退回最近点");
+    }
+
+    #[test]
+    fn consistent_normal_returns_nearest_without_expansion() {
+        let t = KdTree::build(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.4]).expect("应可建树");
+        let normals = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+        let p = PickParams {
+            angle_threshold_deg: 75.0,
+            max_dist_sq: None,
+        };
+        let got = pick_one(
+            &t,
+            Some(&normals),
+            &[0.0, 0.0, 0.05],
+            Some(&[0.0, 0.0, 1.0]),
+            &p,
+        );
+        assert_eq!(got, Some(0), "朝向已符合时应直接取最近点");
+    }
+}
