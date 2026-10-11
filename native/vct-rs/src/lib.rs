@@ -18,3 +18,5 @@ pub use error::VctError;
 mod types;
 
 pub use types::{ObjectFeatures, ABI_VERSION};
+
+mod ffi;
