@@ -39,3 +39,5 @@ mod kdtree;
 mod matching;
 
 mod pick;
+
+mod cluster;
