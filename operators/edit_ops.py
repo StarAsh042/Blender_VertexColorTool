@@ -124,6 +124,16 @@ class VERTEXCOLOR_OT_ClearVertexColors(bpy.types.Operator):
 
                     mesh = obj.data
 
+                    # 记账必须放在删除**之前**，且两类色层合并判断。
+                    # 原先只有删 vertex_colors 的分支 cleared_count += 1，
+                    # 而 Blender 3.2+ 的网格默认走 color_attributes，
+                    # 于是现代网格永远报「已清除 0 个物体的顶点色」——
+                    # 层确实删掉了，计数却是 0，用户以为操作失败。
+                    had_any = (len(mesh.vertex_colors) > 0) or (
+                        hasattr(mesh, "color_attributes")
+                        and len(mesh.color_attributes) > 0
+                    )
+
                     # 清除传统顶点色层
                     if mesh.vertex_colors and len(mesh.vertex_colors) > 0:
                         # 删除所有顶点色层
@@ -133,7 +143,6 @@ class VERTEXCOLOR_OT_ClearVertexColors(bpy.types.Operator):
                             except Exception as e:
                                 log_error("删除顶点色层时出错", exc=e)
                                 break
-                        cleared_count += 1
 
                     # 清除颜色属性
                     if hasattr(mesh, "color_attributes"):
@@ -147,6 +156,9 @@ class VERTEXCOLOR_OT_ClearVertexColors(bpy.types.Operator):
 
                     # 强制更新网格数据
                     mesh.update()
+
+                    if had_any:
+                        cleared_count += 1
 
                 except Exception as e:
                     log_error(f"清除物体 {obj.name} 顶点色时出错", exc=e)

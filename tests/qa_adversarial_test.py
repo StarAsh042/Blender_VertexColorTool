@@ -636,6 +636,72 @@ def test_d4_geometric_center_distance():
           "实际=%s" % (tuple(round(v, 5) for v in feat_far['dimensions']),))
 
 
+def test_clear_counts_color_attributes():
+    """A1：清除顶点色的物体计数必须把 color_attributes 算进去。
+
+    Blender 3.2+ 的网格默认走 color_attributes（而非传统 vertex_colors）。
+    原实现只在删 vertex_colors 的分支里 cleared_count += 1，
+    于是现代网格永远报「已清除 0 个物体的顶点色」——层确实删了，计数是 0，
+    用户以为操作没生效。这正是本用例要钉住的缺陷。
+
+    夹具前提：make_grid_object 无条件创建 color_attributes 层，
+    所以拿到的物体天然是「只有现代 API、没有传统层」的形态。
+    """
+    clear_scene()
+    coll = bpy.data.collections.new("ClearCountGroup")
+    bpy.context.scene.collection.children.link(coll)
+
+    objs = [make_grid_object("clr_%d" % i, (i * 3.0, 0, 0), coll)
+            for i in range(3)]
+
+    # 前提校验：只有 color_attributes，没有传统 vertex_colors
+    check("A1 夹具前提：三个物体都只有 color_attributes",
+          all(len(o.data.color_attributes) == 1 and len(o.data.vertex_colors) == 0
+              for o in objs),
+          "color_attributes=%s vertex_colors=%s" % (
+              [len(o.data.color_attributes) for o in objs],
+              [len(o.data.vertex_colors) for o in objs]))
+
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.vertexcolor.clear_vertex_colors()
+    reported = bpy.context.scene.vertex_color_tool.last_operation
+
+    check("A1 清除 3 个带色层物体，报告应为「已清除 3 个」",
+          "已清除 3 个" in reported,
+          "报告=%r" % reported)
+
+    check("A1 清除后三个物体都不再有 color_attributes",
+          all(len(o.data.color_attributes) == 0 for o in objs),
+          "剩余=%s" % [len(o.data.color_attributes) for o in objs])
+
+
+def test_clear_counts_zero_when_no_layers():
+    """A1 对照：没有色层可删时，报告必须为 0，不能把「选中」当成「清除」。"""
+    clear_scene()
+    coll = bpy.data.collections.new("ClearZeroGroup")
+    bpy.context.scene.collection.children.link(coll)
+
+    # make_grid_object 总会建层，所以建完立刻删掉，得到「无色层」的物体
+    objs = [make_grid_object("zero_%d" % i, (i * 3.0, 0, 0), coll)
+            for i in range(2)]
+    for o in objs:
+        while len(o.data.color_attributes) > 0:
+            o.data.color_attributes.remove(o.data.color_attributes[0])
+        o.data.update()
+
+    check("A1 对照夹具前提：两个物体都无色层",
+          all(len(o.data.color_attributes) == 0 for o in objs),
+          "剩余=%s" % [len(o.data.color_attributes) for o in objs])
+
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.vertexcolor.clear_vertex_colors()
+    reported = bpy.context.scene.vertex_color_tool.last_operation
+
+    check("A1 对照：无色层物体清除后报告应为「已清除 0 个」",
+          "已清除 0 个" in reported,
+          "报告=%r" % reported)
+
+
 def main():
     addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     package_name = os.path.basename(addon_dir)
@@ -660,6 +726,8 @@ def main():
     run_case("results_panel + 越界索引", test_results_panel_and_index)
     run_case("编辑模式只填充选中顶点", test_edit_mode_fill_selected_only)
     run_case("D4 几何中心距离", test_d4_geometric_center_distance)
+    run_case("A1 清除计数含 color_attributes", test_clear_counts_color_attributes)
+    run_case("A1 对照 无色层时报 0", test_clear_counts_zero_when_no_layers)
 
     total = sum(1 for _, ok, _ in _RESULTS if ok is not None)
     passed = sum(1 for _, ok, _ in _RESULTS if ok is True)
