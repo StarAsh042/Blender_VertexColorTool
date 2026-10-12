@@ -579,6 +579,63 @@ def test_edit_mode_fill_selected_only():
 # 主流程
 # ---------------------------------------------------------------------------
 
+def test_d4_geometric_center_distance():
+    """D4：物体位置必须用几何中心，不能用原点。
+
+    原点偏离时（导入资产常把原点放角上/底部），用 obj.location 算距离
+    会完全失真——两个原点相同的物体，几何上一个紧贴目标、一个远在天边，
+    插件却认为它们到目标的距离一模一样。
+
+    夹具要点：必须真的把**几何**搬离原点（改顶点坐标），
+    只改 obj.location 是没用的——那样原点和几何一起动，永远重合。
+    """
+    clear_scene()
+    from Blender_VertexColorTool.core import matching as matching_mod
+
+    def make_offcenter_plane(name, offset):
+        """2x2 平面，几何沿 offset 搬离原点，但原点保持在 (0,0,0)。"""
+        mesh = bpy.data.meshes.new("%s_m" % name)
+        verts = [(float(i) * 2.0 + offset[0], float(j) * 2.0 + offset[1],
+                  offset[2]) for j in range(2) for i in range(2)]
+        mesh.from_pydata(verts, [], [(0, 1, 3, 2)])
+        mesh.update()
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        bpy.context.view_layer.update()
+        return obj
+
+    # 两个源原点都在 (0,0,0)，但几何中心一个在 (1,1,0)、一个在 (1,6,0)
+    near = make_offcenter_plane("d4_near", (0, 0, 0))
+    far = make_offcenter_plane("d4_far", (0, 5, 0))
+
+    feat_near = matching_mod.get_object_features(near)
+    feat_far = matching_mod.get_object_features(far)
+
+    check("D4 夹具前提：两个源的原点确实相同",
+          tuple(near.location) == tuple(far.location) == (0.0, 0.0, 0.0),
+          "near=%s far=%s" % (tuple(near.location), tuple(far.location)))
+
+    check("D4 原点居中的源，几何中心为 (1,1,0)",
+          tuple(round(v, 5) for v in feat_near['location']) == (1.0, 1.0, 0.0),
+          "实际=%s" % (tuple(round(v, 5) for v in feat_near['location']),))
+
+    check("D4 原点偏离的源，几何中心为 (1,6,0) 而非原点 (0,0,0)",
+          tuple(round(v, 5) for v in feat_far['location']) == (1.0, 6.0, 0.0),
+          "实际=%s" % (tuple(round(v, 5) for v in feat_far['location']),))
+
+    # detail 写成中性描述：check() 通过时也会打印 detail，
+    # 若写成「失败时的解释」会在全绿时看起来像失败。
+    distinct = (tuple(feat_near['location']) != tuple(feat_far['location']))
+    check("D4 原点相同但几何不同的两个源，位置必须可区分",
+          distinct,
+          "near=%s far=%s" % (tuple(round(v, 3) for v in feat_near['location']),
+                              tuple(round(v, 3) for v in feat_far['location'])))
+
+    check("D4 dimensions 口径不变",
+          tuple(round(v, 5) for v in feat_far['dimensions']) == (2.0, 2.0, 0.0),
+          "实际=%s" % (tuple(round(v, 5) for v in feat_far['dimensions']),))
+
+
 def main():
     addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     package_name = os.path.basename(addon_dir)
@@ -602,6 +659,7 @@ def main():
     run_case("注册/注销幂等", lambda: test_register_unregister_cycle(package_name))
     run_case("results_panel + 越界索引", test_results_panel_and_index)
     run_case("编辑模式只填充选中顶点", test_edit_mode_fill_selected_only)
+    run_case("D4 几何中心距离", test_d4_geometric_center_distance)
 
     total = sum(1 for _, ok, _ in _RESULTS if ok is not None)
     passed = sum(1 for _, ok, _ in _RESULTS if ok is True)

@@ -130,6 +130,37 @@ def _mesh_volume(mesh):
         return 0.0
 
 
+def _geometric_center(obj):
+    """物体几何中心（世界坐标）。
+
+    用包围盒 8 个角点的中心，而不是逐顶点均值：代价 O(1)，
+    且与 obj.dimensions / bounding_sphere_radius 的口径一致——
+    那两项本来就由包围盒导出。
+
+    为什么需要它：距离计算原先用 obj.location（物体原点）。
+    原点与几何中心重合时两者等价；原点偏离时（导入资产常把原点
+    放在角上或底部）距离会完全失真。已实测确认 obj.bound_box
+    返回局部坐标，必须经 matrix_world 变换。
+    """
+    # 局部导入：本模块其余部分不需要 mathutils，
+    # 不为一个辅助函数把依赖提到模块头。
+    from mathutils import Vector
+
+    try:
+        matrix_world = obj.matrix_world
+        corners = [matrix_world @ Vector(corner) for corner in obj.bound_box]
+        count = float(len(corners))
+        if count == 0.0:
+            return obj.location.copy()
+        return Vector((
+            sum(c.x for c in corners) / count,
+            sum(c.y for c in corners) / count,
+            sum(c.z for c in corners) / count,
+        ))
+    except Exception:  # noqa: BLE001  取不到就退回原点，不让整个特征提取失败
+        return obj.location.copy()
+
+
 def get_object_features(obj):
     """
     获取物体的特征向量（优化版）
@@ -160,7 +191,8 @@ def get_object_features(obj):
             volume = obj.dimensions.x * obj.dimensions.y * obj.dimensions.z
         features = {
             'name': obj.name,
-            'location': obj.location.copy(),
+            # 几何中心而非原点：原点偏离时距离会失真
+            'location': _geometric_center(obj),
             'dimensions': obj.dimensions.copy(),
             'vertex_count': len(mesh.vertices),
             'polygon_count': len(mesh.polygons),
