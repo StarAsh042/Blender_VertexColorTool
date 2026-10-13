@@ -129,6 +129,56 @@ def _target_points_array(mesh_eval, matrix_world):
     return coords @ mw[:3, :3].T + mw[:3, 3]
 
 
+def _read_layer_colors(layer, vertex_count, mesh):
+    """读出现有色层内容到 (vertex_count, 4) 的 float32 数组。
+
+    用途：原生取色路径里「不写入」的顶点必须保留**目标原有**颜色。
+    原实现用 ``np.zeros`` 兜底，等于把被距离上限/法线约束拦下的顶点
+    涂成全透明黑——对已有色层的物体就是直接把用户的颜色擦掉。
+
+    读法与 _apply_colors_bulk 的写法**严格镜像**（同域判断、同索引口径），
+    否则「读进来的原值」与「写出去的位置」会对不上。
+    取不到时返回全 0，行为与旧实现一致（不是更糟）。
+    """
+    out = np.zeros((max(0, int(vertex_count)), 4), dtype=np.float32)
+    if np is None or layer is None or vertex_count <= 0:
+        return out
+
+    try:
+        data = layer.data
+        domain = getattr(layer, 'domain', 'CORNER')
+
+        if domain == 'POINT':
+            n = min(len(data), int(vertex_count))
+            if n <= 0:
+                return out
+            flat = np.empty(n * 4, dtype=np.float32)
+            data.foreach_get("color", flat)
+            out[:n] = flat.reshape(-1, 4)
+            return out
+
+        # CORNER 域：每个顶点取它某个 loop 的颜色。
+        # 写入时同一顶点的所有 loop 写的是同一个颜色，取任一个都对；
+        # 这里用散列赋值，后写的覆盖先写的，结果确定。
+        loop_count = len(mesh.loops)
+        if loop_count <= 0:
+            return out
+        loop_vertex = np.empty(loop_count, dtype=np.int32)
+        mesh.loops.foreach_get("vertex_index", loop_vertex)
+        usable = min(len(data), loop_count)
+        if usable <= 0:
+            return out
+        flat = np.empty(usable * 4, dtype=np.float32)
+        data.foreach_get("color", flat)
+        flat = flat.reshape(-1, 4)
+        idx = loop_vertex[:usable]
+        valid = idx < out.shape[0]
+        out[idx[valid]] = flat[valid]
+        return out
+    except Exception:  # noqa: BLE001  读不到原值就退回全 0，不让复制失败
+        return out
+
+
 def _apply_colors_bulk(layer, vertex_colors, mesh):
     """
     用 foreach_set 批量写入颜色（原生路径专用）。
@@ -612,8 +662,10 @@ def _transform_normals(normals, matrix_world):
 def _copy_colors_to_attribute_kdtree(vcol_layer, target_vertices, target_mesh, vertex_to_loops, source_data, kd, target_normals=None, angle_threshold_deg=0.0, max_dist_sq=None):
     """使用KDTree将颜色复制到颜色属性（可带法线约束 + 取色距离上限）"""
     vertex_colors = source_data['vertex_colors']
+    skipped = 0
     for vert_idx, target_pos in enumerate(target_vertices):
         if vert_idx >= len(target_mesh.vertices):
+            skipped += 1
             continue
 
         normal = None
@@ -624,6 +676,7 @@ def _copy_colors_to_attribute_kdtree(vcol_layer, target_vertices, target_mesh, v
                                     angle_threshold_deg, max_dist_sq)
         if src_idx < 0:
             # 超距（或无候选）-> 不写入，即保留目标原色（用户明确选择的语义）
+            skipped += 1
             continue
         color = vertex_colors.get(src_idx, (1.0, 1.0, 1.0, 1.0))
 
@@ -633,6 +686,7 @@ def _copy_colors_to_attribute_kdtree(vcol_layer, target_vertices, target_mesh, v
             for loop_idx in vertex_to_loops[vert_idx]:
                 if loop_idx < len(vcol_layer.data):
                     vcol_layer.data[loop_idx].color = (color[0], color[1], color[2], color[3] if len(color) > 3 else 1.0)
+    return skipped
 
 
 def _bruteforce_pick(target_pos, target_normal, source_vertices,
@@ -699,8 +753,10 @@ def _copy_colors_to_attribute_bruteforce(vcol_layer, target_vertices, target_mes
     参数显示已启用、实际完全不生效。
     """
     source_normals = source_data.get('normals') if source_data else None
+    skipped = 0
     for vert_idx, target_pos in enumerate(target_vertices):
         if vert_idx >= len(target_mesh.vertices):
+            skipped += 1
             continue
 
         normal = None
@@ -712,6 +768,7 @@ def _copy_colors_to_attribute_bruteforce(vcol_layer, target_vertices, target_mes
             source_normals, angle_threshold_deg, max_dist_sq)
         if not found:
             # 超距（或无候选）-> 不写入，保留目标原色（用户明确选择的语义）
+            skipped += 1
             continue
 
         if vcol_layer.domain == 'POINT' and vert_idx < len(vcol_layer.data):
@@ -720,13 +777,16 @@ def _copy_colors_to_attribute_bruteforce(vcol_layer, target_vertices, target_mes
             for loop_idx in vertex_to_loops[vert_idx]:
                 if loop_idx < len(vcol_layer.data):
                     vcol_layer.data[loop_idx].color = color
+    return skipped
 
 
 def _copy_colors_to_vcol_kdtree(vcol_layer, target_vertices, target_mesh, vertex_to_loops, source_data, kd, target_normals=None, angle_threshold_deg=0.0, max_dist_sq=None):
     """使用KDTree将颜色复制到传统顶点色层（可带法线约束 + 取色距离上限）"""
     vertex_colors = source_data['vertex_colors']
+    skipped = 0
     for vert_idx, target_pos in enumerate(target_vertices):
         if vert_idx >= len(target_mesh.vertices):
+            skipped += 1
             continue
 
         normal = None
@@ -737,6 +797,7 @@ def _copy_colors_to_vcol_kdtree(vcol_layer, target_vertices, target_mesh, vertex
                                     angle_threshold_deg, max_dist_sq)
         if src_idx < 0:
             # 超距（或无候选）-> 不写入，即保留目标原色（用户明确选择的语义）
+            skipped += 1
             continue
         color = vertex_colors.get(src_idx, (1.0, 1.0, 1.0, 1.0))
 
@@ -744,6 +805,7 @@ def _copy_colors_to_vcol_kdtree(vcol_layer, target_vertices, target_mesh, vertex
             for loop_idx in vertex_to_loops[vert_idx]:
                 if loop_idx < len(vcol_layer.data):
                     vcol_layer.data[loop_idx].color = (color[0], color[1], color[2], color[3] if len(color) > 3 else 1.0)
+    return skipped
 
 
 def _copy_colors_to_vcol_bruteforce(vcol_layer, target_vertices, target_mesh, source_data, source_vertices, source_vertex_colors, target_normals=None, angle_threshold_deg=0.0, max_dist_sq=None):
@@ -754,12 +816,16 @@ def _copy_colors_to_vcol_bruteforce(vcol_layer, target_vertices, target_mesh, so
     必须在这条路径上同样生效，否则「关 KDTree + 开约束」会静默失效。
     """
     source_normals = source_data.get('normals') if source_data else None
+    # 这条路径按 loop 迭代，同一个顶点会被访问多次；
+    # 用集合去重，保证单位与其它三条路径一致（**顶点数**，不是 loop 数）。
+    skipped_vertices = set()
     for poly in target_mesh.polygons:
         for loop_idx in poly.loop_indices:
             loop = target_mesh.loops[loop_idx]
             vert_idx = loop.vertex_index
 
             if vert_idx >= len(target_vertices):
+                skipped_vertices.add(vert_idx)
                 continue
 
             target_pos = target_vertices[vert_idx]
@@ -772,10 +838,12 @@ def _copy_colors_to_vcol_bruteforce(vcol_layer, target_vertices, target_mesh, so
                 source_normals, angle_threshold_deg, max_dist_sq)
             if not found:
                 # 超距（或无候选）-> 不写入，保留目标原色
+                skipped_vertices.add(vert_idx)
                 continue
 
             if loop_idx < len(vcol_layer.data):
                 vcol_layer.data[loop_idx].color = color
+    return len(skipped_vertices)
 
 
 def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_data, vc_tool=None):
@@ -797,7 +865,13 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
             等价于纯距离最近。
 
     Returns:
-        bool: 是否成功写入
+        (ok, written, skipped): 三元组。
+            - ``ok`` 是否成功写入（保留原有语义，调用方仍以它为成功判据）
+            - ``written`` 真正写入的**顶点数**
+            - ``skipped`` 因约束未写入（保留原色）的**顶点数**
+
+        之所以不再返回裸 bool：调用方需要跳过数来撤销空层与上报（A2/A3）。
+        三元组与裸 bool 不可混用——本函数所有出口都必须是三元组。
     """
     matrix_world = target_obj.matrix_world
     target_mesh = target_obj.data
@@ -813,7 +887,7 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
             base_count=len(target_mesh.vertices),
             evaluated_count=len(target_mesh_eval.vertices),
         )
-        return False
+        return False, 0, 0
 
     # === 法线约束是否启用（阶段 B / 批次 2 修正）===
     # 只判断一次并复用：既用于「是否绕过原生内核」的门控，
@@ -901,43 +975,61 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
                     target_normals, angle_threshold, max_dist_sq,
                 )
                 dense = source_data['colors_dense']
-                out_colors = np.zeros((picked.shape[0], 4), dtype=np.float32)
-                # 下标 -1 表示内核判定「不写入该点」，保持原色（全 0 即未写入）。
+                # 下标 -1 表示内核判定「不写入该点」-> 保留目标**原有**颜色。
+                # 必须真的读出原值，不能用 np.zeros 兜底：后者对被拦下的
+                # 顶点写 0，等于擦掉用户已有的颜色（「保留原色」名不副实）。
                 hit = picked >= 0
-                out_colors[hit] = dense[picked[hit]]
+                if hit.all():
+                    # 无跳过：直接按下标取色，省掉一次整层读取
+                    out_colors = dense[picked]
+                else:
+                    out_colors = _read_layer_colors(
+                        target_layer, picked.shape[0], target_mesh)
+                    out_colors[hit] = dense[picked[hit]]
+                written = int(hit.sum())
+                skipped = int(picked.shape[0]) - written
             else:
                 out_colors = native_tree.query_colors(
                     source_data['colors_dense'], target_points
                 )
+                written = int(out_colors.shape[0])
+                skipped = 0
+
+            # 一个顶点都写不进去时**不调用** _apply_colors_bulk：
+            # 调用方会据此撤掉本次刚建的空层，不留全透明黑的垃圾数据。
+            if written == 0:
+                return True, 0, skipped
             _apply_colors_bulk(target_layer, out_colors, target_mesh)
-            return True
+            return True, written, skipped
         except Exception as e:
             # 原生路径出任何问题都不能让复制失败，回退 Python 实现
             log_warning(f"原生取色失败，本次回退 Python 实现: {e}")
 
     if is_attribute:
         if use_kdtree:
-            _copy_colors_to_attribute_kdtree(
+            skipped = _copy_colors_to_attribute_kdtree(
                 target_layer, target_vertices, target_mesh, vertex_to_loops,
                 source_data, kd, target_normals, angle_threshold, max_dist_sq)
         else:
-            _copy_colors_to_attribute_bruteforce(
+            skipped = _copy_colors_to_attribute_bruteforce(
                 target_layer, target_vertices, target_mesh, vertex_to_loops,
                 source_data, source_data['vertices'],
                 source_data['vertex_colors'], target_normals,
                 angle_threshold, max_dist_sq)
     else:
         if use_kdtree:
-            _copy_colors_to_vcol_kdtree(
+            skipped = _copy_colors_to_vcol_kdtree(
                 target_layer, target_vertices, target_mesh, vertex_to_loops,
                 source_data, kd, target_normals, angle_threshold, max_dist_sq)
         else:
-            _copy_colors_to_vcol_bruteforce(
+            skipped = _copy_colors_to_vcol_bruteforce(
                 target_layer, target_vertices, target_mesh, source_data,
                 source_data['vertices'], source_data['vertex_colors'],
                 target_normals, angle_threshold, max_dist_sq)
 
-    return True
+    # 单位统一为顶点数：written + skipped 恒等于目标顶点总数。
+    written = len(target_vertices) - skipped
+    return True, written, skipped
 
 
 def copy_vertex_colors_between_objects(
@@ -945,6 +1037,7 @@ def copy_vertex_colors_between_objects(
     target_obj: bpy.types.Object,
     vc_tool=None,
     failure_reasons: list = None,
+    stats: dict = None,
 ) -> bool:
     """
     复制顶点色的核心函数（V3版，支持指定层名）
@@ -956,6 +1049,12 @@ def copy_vertex_colors_between_objects(
         failure_reasons: 可选的列表。传入时，所有失败路径都会向其追加
             一条「原因」文本，供上层聚合后展示给用户（P0-5）。
             为None 时完全不记录（保持既有调用方零开销、零行为变化）。
+        stats: 可选的字典出参。传入时会被更新两个键：
+            ``written`` 本次真正写入的**顶点数**，
+            ``skipped`` 因约束未写入（保留原色）的**顶点数**。
+            两者之和恒等于目标顶点总数。为 None 时零开销、零行为变化。
+            用出参而不是改返回值，是为了不动「成功/失败」这个既有契约——
+            上层正靠它统计成功数。
 
     Returns:
         bool: 是否复制成功
@@ -1002,6 +1101,22 @@ def copy_vertex_colors_between_objects(
             )
 
         # --- 处理目标物体 ---
+        # 记下「层是不是本来就存在」：若本次一个顶点都写不进去，而层又是
+        # 我们刚建的，就要把它撤掉——否则会留下一个全透明黑(0,0,0,0)的层，
+        # 渲染时看不见，但后续任何按顶点色的操作都会读到它（A2）。
+        #
+        # ⚠ 这里**不能**用 get_vcol_layer(obj, name=None) 来探测：
+        #   name 为 None 时该函数会忽略 create_if_missing，
+        #   直接走 get_or_create_active_vcol_layer —— 探测本身就把层建出来了，
+        #   判据永远是「本来就有」，撤层逻辑从不执行。探测必须无副作用。
+        #
+        # 用 getattr 兜底：真实网格必定同时具备这两个集合，但测试替身可能没有——
+        # 探测失败不该把整个复制流程带崩（那会让求值网格的释放路径根本走不到）。
+        _ca = getattr(target_obj.data, 'color_attributes', None)
+        _vc = getattr(target_obj.data, 'vertex_colors', None)
+        had_layer_before = ((_ca is not None and len(_ca) > 0)
+                            or (_vc is not None and len(_vc) > 0))
+
         target_layer = get_vcol_layer(target_obj, name=specified_name, create_if_missing=True)
         if not target_layer:
             return _fail(
@@ -1022,13 +1137,28 @@ def copy_vertex_colors_between_objects(
         # Python 路径，也无论中途是否抛异常，求值网格都必定被释放。
         # 原实现的三处 to_mesh_clear() 都会被外层 except 跳过。
         try:
-            _write_colors_to_target(target_obj, target_mesh_eval, target_layer,
-                                    source_data, vc_tool)
+            _ok, written, skipped = _write_colors_to_target(
+                target_obj, target_mesh_eval, target_layer, source_data, vc_tool)
         finally:
             try:
                 target_obj_eval.to_mesh_clear()
             except Exception as clear_exc:
                 log_warning(f"释放求值网格失败 ({target_obj.name}): {clear_exc}")
+
+        # 一个顶点都没写进去 + 层是本次新建的 -> 撤掉这个空层。
+        # 只在这两个条件同时成立时才撤：已有层属于用户的资产，不该动。
+        if written == 0 and not had_layer_before and target_layer is not None:
+            try:
+                if hasattr(target_layer, 'domain'):
+                    target_obj.data.color_attributes.remove(target_layer)
+                else:
+                    target_obj.data.vertex_colors.remove(target_layer)
+            except Exception as remove_exc:
+                log_warning(f"撤掉空颜色层失败 ({target_obj.name}): {remove_exc}")
+
+        if stats is not None:
+            stats['written'] = stats.get('written', 0) + written
+            stats['skipped'] = stats.get('skipped', 0) + skipped
 
         target_obj.data.update()
         return True

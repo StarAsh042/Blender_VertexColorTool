@@ -702,6 +702,142 @@ def test_clear_counts_zero_when_no_layers():
           "报告=%r" % reported)
 
 
+def _a2a3_fixture(target_has_layer):
+    """建一组源/目标，并设一个必然拦下全部顶点的距离上限。
+
+    源与目标都是 2x2 平面（间距 0.5），源有颜色、目标可选有无色层。
+    距离上限设成源的包围盒对角线的 0.02%（约 5.7e-4），
+    远小于 0.5 的间距 -> 所有顶点都被判超距。
+    """
+    clear_scene()
+    coll_a = bpy.data.collections.new("A2A3Source")
+    coll_b = bpy.data.collections.new("A2A3Target")
+    bpy.context.scene.collection.children.link(coll_a)
+    bpy.context.scene.collection.children.link(coll_b)
+
+    make_grid_object("a2a3_src", (0, 0, 0), coll_a, n=2,
+                     color_fn=lambda i, t: (1.0, 0.0, 0.0, 1.0))
+    tgt = make_grid_object("a2a3_tgt", (0, 0.5, 0), coll_b, n=2,
+                           color_fn=lambda i, t: (0.0, 0.0, 1.0, 1.0))
+
+    if not target_has_layer:
+        # make_grid_object 总会建层；这里把层删掉，得到「本来就没有色层」的目标
+        while len(tgt.data.color_attributes) > 0:
+            tgt.data.color_attributes.remove(tgt.data.color_attributes[0])
+        tgt.data.update()
+
+    vc_tool = bpy.context.scene.vertex_color_tool
+    vc_tool.collection_a = coll_a.name
+    vc_tool.collection_b = coll_b.name
+    vc_tool.normal_angle_threshold = 0.0
+    vc_tool.pick_distance_percent = 0.0002   # 0.02% -> 必然全部超距
+    bpy.ops.vertexcolor.analyze_groups()
+    bpy.ops.vertexcolor.find_matches()
+    bpy.ops.vertexcolor.copy_colors()
+    return tgt
+
+
+def test_a3_reports_skipped_vertex_count():
+    """A3：有顶点因约束未写入时，汇总必须交代跳过了多少。
+
+    只报「成功 N 个物体」会让用户以为全部顶点都写入了，
+    实际可能有大量顶点因距离上限/法线约束被保留原色。
+    """
+    tgt = _a2a3_fixture(target_has_layer=True)
+    reported = bpy.context.scene.vertex_color_tool.last_operation
+
+    check("A3 汇总应包含跳过的顶点数",
+          "个顶点因距离上限/法线约束保留原色" in reported,
+          "报告=%r" % reported)
+    check("A3 跳过数应等于目标顶点总数（本夹具全部超距）",
+          "%d 个顶点" % len(tgt.data.vertices) in reported,
+          "报告=%r 目标顶点数=%d" % (reported, len(tgt.data.vertices)))
+
+
+def test_a2_no_empty_layer_when_all_skipped():
+    """A2：一个顶点都写不进去时，不该给「本来没有色层」的目标新建空层。
+
+    原先 np.zeros 兜底会写出 (0,0,0,0)——全透明黑，
+    渲染时看不见，但后续任何按顶点色的操作都会读到它。
+    """
+    tgt = _a2a3_fixture(target_has_layer=False)
+    layers = len(tgt.data.color_attributes) + len(tgt.data.vertex_colors)
+
+    check("A2 全部顶点被拦下时，不应给无色层目标新建色层",
+          layers == 0,
+          "剩余层数=%d（%s）" % (layers,
+                              "应为 0" if layers else "符合预期"))
+
+
+def test_a2_keeps_preexisting_layer():
+    """A2 对照：层是用户本来就有的 -> 一个顶点都没写也不该被撤掉。
+
+    「撤掉空层」的判据必须是「层是本次新建的」，不能只按「没写入」。
+    已有层属于用户的资产。
+    """
+    tgt = _a2a3_fixture(target_has_layer=True)
+    layers = len(tgt.data.color_attributes) + len(tgt.data.vertex_colors)
+
+    check("A2 对照：目标本就有层时，全拦下后层必须保留",
+          layers >= 1,
+          "剩余层数=%d（不得为 0）" % layers)
+
+    # 而且必须保留原色（蓝），不能被写成全透明黑
+    layer = tgt.data.color_attributes[0] if len(tgt.data.color_attributes) else None
+    if layer is None:
+        check("A2 对照：保留的层里仍是原色", False, "层不见了")
+        return
+    colors = [tuple(round(v, 3) for v in d.color_srgb) for d in layer.data]
+    check("A2 对照：保留的层里仍是目标原色（蓝），未被写成全透明黑",
+          all(c[:3] == (0.0, 0.0, 1.0) for c in colors),
+          "实际=%s" % colors[:3])
+
+
+def test_a2_partial_block_keeps_original_colors():
+    """A2 残留：**部分**顶点被拦下时，被拦的那些也必须保住原色。
+
+    这是「超距顶点保留原色」这句承诺的核心。原实现用 np.zeros 兜底，
+    只是把「未写入」表达成「写 0」——对已有色层的物体，
+    等于把被约束拦下的顶点涂成全透明黑，用户的颜色被擦掉。
+
+    夹具：源在左、目标在右，两者**部分重叠**——
+    让目标上一半顶点落在距离上限内、另一半在外。
+    """
+    clear_scene()
+    coll_a = bpy.data.collections.new("A2PSource")
+    coll_b = bpy.data.collections.new("A2PTarget")
+    bpy.context.scene.collection.children.link(coll_a)
+    bpy.context.scene.collection.children.link(coll_b)
+
+    # 源：2x2 平面，红，位于原点
+    make_grid_object("a2p_src", (0, 0, 0), coll_a, n=2,
+                     color_fn=lambda i, t: (1.0, 0.0, 0.0, 1.0))
+    # 目标：2x2 平面，蓝，沿 +X 平移 1.0 -> 一半顶点在源范围内，一半在外
+    tgt = make_grid_object("a2p_tgt", (1.0, 0, 0), coll_b, n=2,
+                           color_fn=lambda i, t: (0.0, 0.0, 1.0, 1.0))
+
+    vc_tool = bpy.context.scene.vertex_color_tool
+    vc_tool.collection_a = coll_a.name
+    vc_tool.collection_b = coll_b.name
+    vc_tool.normal_angle_threshold = 0.0
+    # 上限取源对角线的一个小比例：足以让近侧顶点通过、远侧被拦
+    vc_tool.pick_distance_percent = 0.3
+    bpy.ops.vertexcolor.analyze_groups()
+    bpy.ops.vertexcolor.find_matches()
+    bpy.ops.vertexcolor.copy_colors()
+
+    layer = tgt.data.color_attributes[0] if len(tgt.data.color_attributes) else None
+    if layer is None:
+        check("A2 部分拦下时被拦顶点保留原色", False, "色层不见了")
+        return
+    colors = [tuple(round(v, 3) for v in d.color_srgb) for d in layer.data]
+    # 目标原有颜色是蓝；被拦下的顶点必须仍是蓝，不得变成 (0,0,0,0)
+    black = [c for c in colors if c[:3] == (0.0, 0.0, 0.0)]
+    check("A2 部分拦下时，被拦顶点必须保住原色（蓝）而非被写成全透明黑",
+          len(black) == 0,
+          "全黑顶点 %d/%d 个: %s" % (len(black), len(colors), black[:3]))
+
+
 def main():
     addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     package_name = os.path.basename(addon_dir)
@@ -728,6 +864,10 @@ def main():
     run_case("D4 几何中心距离", test_d4_geometric_center_distance)
     run_case("A1 清除计数含 color_attributes", test_clear_counts_color_attributes)
     run_case("A1 对照 无色层时报 0", test_clear_counts_zero_when_no_layers)
+    run_case("A3 上报跳过顶点数", test_a3_reports_skipped_vertex_count)
+    run_case("A2 全拦下不留空层", test_a2_no_empty_layer_when_all_skipped)
+    run_case("A2 对照 已有层保留", test_a2_keeps_preexisting_layer)
+    run_case("A2 部分拦下保留原色", test_a2_partial_block_keeps_original_colors)
 
     total = sum(1 for _, ok, _ in _RESULTS if ok is not None)
     passed = sum(1 for _, ok, _ in _RESULTS if ok is True)

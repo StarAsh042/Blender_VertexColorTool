@@ -197,6 +197,10 @@ class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
             # 复制顶点色到每个目标物体
             success_count = 0
             fail_count = 0
+            # A3: 累计跳过的顶点数，结束时写进汇总——
+            # 只报「成功 N 个物体」会让用户以为全部顶点都写入了，
+            # 实际可能有大量顶点因距离上限/法线约束被保留原色。
+            copy_stats = {'written': 0, 'skipped': 0}
             # P0-5: 收集失败原因，结束时聚合展示
             failures = _BoundedFailureList()
 
@@ -205,7 +209,7 @@ class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
                     # 复制顶点色
                     success = copy_vertex_colors_between_objects(
                         source_obj, target_obj, vc_tool=vc_tool,
-                        failure_reasons=failures,
+                        failure_reasons=failures, stats=copy_stats,
                     )
 
                     if success:
@@ -225,13 +229,21 @@ class VERTEXCOLOR_OT_ManualCopy(bpy.types.Operator):
 
             # P0-5: 把失败明细展示给用户（面板状态栏 + 状态栏报告）
             failure_detail = _format_failure_details(failures, total_failures=fail_count)
-            summary = f"手动复制: 成功 {success_count}, 失败 {fail_count}"
+            # 跳过数为 0 时不写这一句：没发生的事不必占位置，
+            # 也让「有这句 = 确实跳过了顶点」成为一个可依赖的信号。
+            skip_detail = ""
+            if copy_stats['skipped'] > 0:
+                skip_detail = (
+                    f" | {copy_stats['skipped']} 个顶点因距离上限/法线约束保留原色"
+                )
+
+            summary = f"手动复制: 成功 {success_count}, 失败 {fail_count}{skip_detail}"
             if failure_detail:
                 summary += f" | 失败原因: {failure_detail}"
             vc_tool.last_operation = summary
             self.report(
                 {'INFO'},
-                f"成功从 {source_obj.name} 复制顶点色到 {success_count} 个物体 ({fail_count} 个失败)"
+                f"成功从 {source_obj.name} 复制顶点色到 {success_count} 个物体 ({fail_count} 个失败){skip_detail}"
             )
             if failure_detail:
                 self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
@@ -319,6 +331,10 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
 
             success_count = 0
             fail_count = 0
+            # A3: 累计跳过的顶点数，结束时写进汇总——
+            # 只报「成功 N 个物体」会让用户以为全部顶点都写入了，
+            # 实际可能有大量顶点因距离上限/法线约束被保留原色。
+            copy_stats = {'written': 0, 'skipped': 0}
             # P0-5: 收集失败原因，结束时聚合展示
             failures = _BoundedFailureList()
 
@@ -362,7 +378,7 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
                             # 使用共用的复制函数
                             if copy_vertex_colors_between_objects(
                                 source_obj, target_obj, vc_tool=vc_tool,
-                                failure_reasons=failures,
+                                failure_reasons=failures, stats=copy_stats,
                             ):
                                 success_count += 1
                             else:
@@ -475,11 +491,22 @@ class VERTEXCOLOR_OT_CopyColors(bpy.types.Operator):
                     self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
                 return {'CANCELLED'}
 
-            summary = f"复制完成: 成功 {success_count}, 失败 {fail_count} ({elapsed_time:.2f}s)"
+            # 跳过数为 0 时不写这一句：没发生的事不必占位置，
+            # 也让「有这句 = 确实跳过了顶点」成为一个可依赖的信号。
+            skip_detail = ""
+            if copy_stats['skipped'] > 0:
+                skip_detail = (
+                    f" | {copy_stats['skipped']} 个顶点因距离上限/法线约束保留原色"
+                )
+
+            summary = (f"复制完成: 成功 {success_count}, 失败 {fail_count} "
+                       f"({elapsed_time:.2f}s){skip_detail}")
             if failure_detail:
                 summary += f" | 失败原因: {failure_detail}"
             vc_tool.last_operation = summary
-            self.report({'INFO'}, f"顶点色复制完成: 成功 {success_count}, 失败 {fail_count} (耗时: {elapsed_time:.2f}秒)")
+            info_msg = (f"顶点色复制完成: 成功 {success_count}, 失败 {fail_count} "
+                        f"(耗时: {elapsed_time:.2f}秒){skip_detail}")
+            self.report({'INFO'}, info_msg)
             if failure_detail:
                 self.report({'WARNING'}, f"部分物体复制失败，原因: {failure_detail}")
             return {'FINISHED'}
