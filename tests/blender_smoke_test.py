@@ -386,10 +386,15 @@ def test_cache_key_isolation():
     bpy.context.view_layer.update()          # 刷新 depsgraph 的 matrix_world
     moved = VertexColorCache.get_source_data(mover, "Color", vc_tool)
     moved_vertex = moved['vertices'][0] if moved.get('vertices') else None
+    # 期望值是 6.0 而不是 7.0：夹具 make_mesh_object 的首顶点在**局部**
+    # (-1,-1,-1)，物体移到 (7,0,0) 后世界坐标 x = 7 + (-1) = 6.0。
+    # 原断言写 7.0 是漏了这个 -1 偏移——插件本身是对的
+    # （moved is not first 为真，说明缓存确实失效并按新位置重建了）。
+    # 改回 7.0 会让这条一直红。
     check("移动源物体后缓存失效并按新位置重建",
           moved is not first and moved_vertex is not None
-          and abs(moved_vertex.x - 7.0) < 1e-5,
-          f"首顶点 x={getattr(moved_vertex, 'x', None)}（应为 7.0，"
+          and abs(moved_vertex.x - 6.0) < 1e-5,
+          f"首顶点 x={getattr(moved_vertex, 'x', None)}（应为 6.0，"
           f"条目新建={moved is not first}）")
 
     rotated_stats_misses_before = VertexColorCache._misses
