@@ -979,6 +979,12 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
                 # 必须真的读出原值，不能用 np.zeros 兜底：后者对被拦下的
                 # 顶点写 0，等于擦掉用户已有的颜色（「保留原色」名不副实）。
                 hit = picked >= 0
+                written = int(hit.sum())
+                skipped = int(picked.shape[0]) - written
+                # 先判空再决定要不要读回原值：全跳过时根本不写，
+                # 把整层读回来纯属浪费（读到的数据随即被丢弃）。
+                if written == 0:
+                    return True, 0, skipped
                 if hit.all():
                     # 无跳过：直接按下标取色，省掉一次整层读取
                     out_colors = dense[picked]
@@ -986,8 +992,6 @@ def _write_colors_to_target(target_obj, target_mesh_eval, target_layer, source_d
                     out_colors = _read_layer_colors(
                         target_layer, picked.shape[0], target_mesh)
                     out_colors[hit] = dense[picked[hit]]
-                written = int(hit.sum())
-                skipped = int(picked.shape[0]) - written
             else:
                 out_colors = native_tree.query_colors(
                     source_data['colors_dense'], target_points
