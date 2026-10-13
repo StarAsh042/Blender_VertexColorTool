@@ -838,6 +838,109 @@ def test_a2_partial_block_keeps_original_colors():
           "全黑顶点 %d/%d 个: %s" % (len(black), len(colors), black[:3]))
 
 
+def _l_prism_obj(name, location=(0.0, 0.0, 0.0)):
+    """L 型棱柱：包围盒中心落在空角里、真实质心落在材料上，两者可区分。"""
+    base = [(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)]
+    verts = [(x, y, 0.0) for x, y in base] + [(x, y, 1.0) for x, y in base]
+    # 底逆序、顶正序；绕序不一致会让散度定理的正负体积互相抵消
+    faces = [tuple(range(5, -1, -1)), tuple(range(6, 12))]
+    for i in range(6):
+        j = (i + 1) % 6
+        faces.append((i, j, j + 6, i + 6))
+    mesh = bpy.data.meshes.new(name + "_m")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.location = location
+    bpy.context.view_layer.update()   # 不刷新的话 matrix_world 还是单位矩阵
+    return obj
+
+
+def test_location_source_switch():
+    """物体位置的两个实现都要能用，且切换必须真的生效。
+
+    默认 'bbox'（包围盒中心，O(1)）；'centroid' 是可切换项（真实质心，
+    零体积网格退回顶点均值）。实测两者在匹配质量上统计不可区分，
+    故按代价默认 bbox——但这不代表 centroid 分支可以坏掉。
+    """
+    clear_scene()
+    from Blender_VertexColorTool.core import matching as M
+
+    original = M._LOCATION_SOURCE
+    try:
+        check("位置取值默认是 bbox",
+              original == 'bbox',
+              "实际=%r" % original)
+
+        obj = _l_prism_obj("loc_l")
+
+        M._LOCATION_SOURCE = 'bbox'
+        bc = M._geometric_center(obj)
+
+        M._LOCATION_SOURCE = 'centroid'
+        ct = M._geometric_center(obj)
+
+        # L 型的两个中心必须不同，否则这个测试证明不了切换生效
+        check("L 型的包围盒中心与真实质心不同（夹具前提）",
+              (bc - ct).length > 0.5,
+              "两者相距 %.3f（应 > 0.5）" % (bc - ct).length)
+
+        check("bbox 模式下返回 (2,2,0.5)",
+              tuple(round(v, 3) for v in bc) == (2.0, 2.0, 0.5),
+              "实际=%s" % (tuple(round(v, 3) for v in bc),))
+
+        # 真实质心应在材料里：x/y 明显小于包围盒中心的 2.0
+        check("centroid 模式下返回真实质心（落在材料上，非空角）",
+              ct.x < 1.8 and ct.y < 1.8,
+              "实际=%s（包围盒中心是 (2,2,0.5)）"
+              % (tuple(round(v, 3) for v in ct),))
+
+        # detail 写成中性描述：check() 通过时也会打印 detail，
+        # 若写成「失败时的解释」会在全绿时看起来像失败。
+        check("centroid 模式确实与 bbox 模式给出不同结果（切换生效）",
+              tuple(round(v, 3) for v in bc) != tuple(round(v, 3) for v in ct),
+              "bbox=%s centroid=%s"
+              % (tuple(round(v, 3) for v in bc), tuple(round(v, 3) for v in ct)))
+
+        # 零体积网格：质心无定义，必须退回**顶点均值**而不是包围盒中心。
+        #
+        # ⚠ 夹具必须**非对称**：对称平面的顶点均值恰好等于包围盒中心，
+        #   用对称夹具测不出退回是否真的生效（两边永远相等，断言恒真）。
+        #   这里在一个 4x4 方框里多塞一个偏心的顶点，把均值拉离中心。
+        mesh = bpy.data.meshes.new("loc_zero_m")
+        mesh.from_pydata(
+            [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0), (2, 0.5, 0)],
+            [], [(0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)])
+        mesh.update()
+        zero = bpy.data.objects.new("loc_zero", mesh)
+        bpy.context.scene.collection.objects.link(zero)
+        bpy.context.view_layer.update()
+
+        check("零体积夹具的真实质心无定义（返回 None）",
+              M._true_centroid(zero) is None,
+              "实际=%r" % (M._true_centroid(zero),))
+
+        M._LOCATION_SOURCE = 'bbox'
+        zero_bc = M._geometric_center(zero)
+        M._LOCATION_SOURCE = 'centroid'
+        zero_ct = M._geometric_center(zero)
+
+        # 前提：这个夹具的顶点均值与包围盒中心确实不同，否则测不出退回
+        check("零体积夹具的包围盒中心与顶点均值不同（夹具前提）",
+              tuple(round(v, 3) for v in zero_bc) != tuple(round(v, 3) for v in zero_ct),
+              "bbox=%s 退回后=%s"
+              % (tuple(round(v, 3) for v in zero_bc),
+                 tuple(round(v, 3) for v in zero_ct)))
+
+        check("零体积网格在 centroid 模式下退回顶点均值（y 应被拉离 2.0）",
+              zero_ct.y < 1.9,
+              "退回后的 y=%.3f（包围盒中心是 2.0，顶点均值应为 1.7）" % zero_ct.y)
+    finally:
+        # 模块级常量是全局状态，必须还原，否则污染后续用例
+        M._LOCATION_SOURCE = original
+
+
 def main():
     addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     package_name = os.path.basename(addon_dir)
@@ -868,6 +971,7 @@ def main():
     run_case("A2 全拦下不留空层", test_a2_no_empty_layer_when_all_skipped)
     run_case("A2 对照 已有层保留", test_a2_keeps_preexisting_layer)
     run_case("A2 部分拦下保留原色", test_a2_partial_block_keeps_original_colors)
+    run_case("位置取值两模式可切换", test_location_source_switch)
 
     total = sum(1 for _, ok, _ in _RESULTS if ok is not None)
     passed = sum(1 for _, ok, _ in _RESULTS if ok is True)

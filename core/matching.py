@@ -130,20 +130,30 @@ def _mesh_volume(mesh):
         return 0.0
 
 
-def _geometric_center(obj):
-    """物体几何中心（世界坐标）。
+# 物体位置特征的取值方式。要切换只改这一行。
+#
+#   'bbox'      包围盒 8 角点的世界坐标中心。O(1)，无零体积回退分支。
+#   'centroid'  真实质心（散度定理，四面体分解）。与本模块 volume 的做法一致，
+#               不再是「与 dimensions 同源」的包围盒近似；代价 O(F)，
+#               且零体积网格（平面）无质心，需退回顶点均值。
+#
+# 为什么需要这个特征：距离计算原先用 obj.location（物体原点）。
+# 原点与几何中心重合时两者等价；原点偏离时（导入资产常把原点放在角上
+# 或底部）距离会完全失真。
+#
+# 为什么默认 'bbox'：实测两者在匹配质量上统计不可区分
+# （7 形状 10 物体二维布局，Spearman 0.968 vs 0.977、最近源判定 7/10 vs 6/10，
+# 两轮各领先一项；详见 deliverables/修复计划_v1.0.0.md 第九节）。
+# 质量既然无差别，就按代价选——bbox 是 O(1) 且没有零体积退回分支。
+# 'centroid' 保留为可切换项，供资产原点语义特殊时使用。
+_LOCATION_SOURCE = 'bbox'
 
-    用包围盒 8 个角点的中心，而不是逐顶点均值：代价 O(1)，
-    且与 obj.dimensions / bounding_sphere_radius 的口径一致——
-    那两项本来就由包围盒导出。
 
-    为什么需要它：距离计算原先用 obj.location（物体原点）。
-    原点与几何中心重合时两者等价；原点偏离时（导入资产常把原点
-    放在角上或底部）距离会完全失真。已实测确认 obj.bound_box
-    返回局部坐标，必须经 matrix_world 变换。
+def _bbox_center(obj):
+    """包围盒 8 角点的世界坐标中心。
+
+    已实测确认 obj.bound_box 返回**局部坐标**，必须经 matrix_world 变换。
     """
-    # 局部导入：本模块其余部分不需要 mathutils，
-    # 不为一个辅助函数把依赖提到模块头。
     from mathutils import Vector
 
     try:
@@ -159,6 +169,85 @@ def _geometric_center(obj):
         ))
     except Exception:  # noqa: BLE001  取不到就退回原点，不让整个特征提取失败
         return obj.location.copy()
+
+
+def _true_centroid(obj):
+    """真实质心（世界坐标，散度定理的四面体分解）。
+
+    与 _mesh_volume 用的是同一套公式：对每个三角面 (a,b,c) 取
+    signed_volume = dot(a, cross(b,c)) / 6、重心 = (a+b+c)/4，
+    再按体积加权求和。
+
+    返回 None 表示**算不出**（零体积网格、开放网格、面数不足）——
+    此时调用方应退回其它口径。平面（体积为 0）本就无质心可言，
+    返回 None 是正确语义，不是失败。
+    """
+    from mathutils import Vector
+
+    try:
+        matrix_world = obj.matrix_world
+        mesh = obj.data
+        verts = [matrix_world @ v.co for v in mesh.vertices]
+        if not verts:
+            return None
+
+        total_six_v = 0.0
+        acc = Vector((0.0, 0.0, 0.0))
+        for poly in mesh.polygons:
+            loop_indices = list(poly.loop_indices)
+            if len(loop_indices) < 3:
+                continue
+            a = verts[mesh.loops[loop_indices[0]].vertex_index]
+            # 扇形三角化：凸多边形精确，凹多边形在自交时会有偏差，
+            # 但本项目只把质心当位置代理，不用于体积等精确量。
+            for k in range(1, len(loop_indices) - 1):
+                b = verts[mesh.loops[loop_indices[k]].vertex_index]
+                c = verts[mesh.loops[loop_indices[k + 1]].vertex_index]
+                six_v = a.dot(b.cross(c))
+                total_six_v += six_v
+                acc += six_v * (a + b + c) / 4.0
+
+        if abs(total_six_v) < 1e-9:
+            return None
+        return acc / total_six_v
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _vertex_mean(obj):
+    """顶点均值（世界坐标）。作零体积网格的退回口径。"""
+    from mathutils import Vector
+
+    try:
+        matrix_world = obj.matrix_world
+        verts = [matrix_world @ v.co for v in obj.data.vertices]
+        count = float(len(verts))
+        if count == 0.0:
+            return None
+        return Vector((
+            sum(v.x for v in verts) / count,
+            sum(v.y for v in verts) / count,
+            sum(v.z for v in verts) / count,
+        ))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _geometric_center(obj):
+    """按 _LOCATION_SOURCE 返回物体位置（世界坐标）。
+
+    这是 get_object_features 的唯一入口；切换实现不会影响调用方。
+    """
+    if _LOCATION_SOURCE == 'centroid':
+        center = _true_centroid(obj)
+        if center is not None:
+            return center
+        # 零体积（平面等）无质心 -> 退回顶点均值。
+        # **刻意不用包围盒中心**：那会绕回 bbox 方案，等于开关失效。
+        fallback = _vertex_mean(obj)
+        if fallback is not None:
+            return fallback
+    return _bbox_center(obj)
 
 
 def get_object_features(obj):
