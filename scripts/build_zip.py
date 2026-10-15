@@ -133,8 +133,9 @@ def verify_dll_hash(project_root):
     """
     校验原生库 SHA256 与「已知良好」记录一致（发布物完整性守护）。
 
-    重新编译 native/vct_native.cpp 后哈希必然变化 -> 构建失败，
-    此时人工确认构建来源可信，再更新文件顶部的 KNOWN_DLL_SHA256。
+    重新编译原生内核（native/vct-rs，经 native/build.py）后哈希必然变化
+    -> 构建失败，此时人工确认构建来源可信，再更新文件顶部的
+    KNOWN_DLL_SHA256。
     """
     import hashlib
 
